@@ -2,15 +2,11 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Sancho.Console;
 
-/// <summary>
-/// Maintains a long-lived conversation with Claude by running the
-/// <c>claude</c> CLI as a persistent subprocess.  Sentences are sent via
-/// stdin (stream-json format); responses are parsed from stdout.
-/// </summary>
 public sealed class ClaudeService
 {
     private const string Orange = "[38;5;214m";
@@ -20,6 +16,7 @@ public sealed class ClaudeService
 
     private readonly string _targetDirectory;
     private readonly string _systemPrompt;
+    private readonly ILogger<ClaudeService> _logger;
     private readonly Channel<string> _input = Channel.CreateUnbounded<string>();
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -29,14 +26,17 @@ public sealed class ClaudeService
     private Process? _process;
     private StreamWriter? _stdin;
     private TaskCompletionSource? _turnComplete;
+    private readonly StringBuilder _turnBuffer = new();
+    private bool _turnHasContent;
 
-    public ClaudeService(IOptions<ClaudeOptions> options)
+    public ClaudeService(IOptions<ClaudeOptions> options, ILogger<ClaudeService> logger)
     {
         var o = options.Value;
         _targetDirectory = string.IsNullOrWhiteSpace(o.TargetDirectory)
             ? Environment.CurrentDirectory
             : o.TargetDirectory;
         _systemPrompt = o.SystemPrompt;
+        _logger = logger;
     }
 
     // ── Public API ─────────────────────────────────────────────────
@@ -106,10 +106,10 @@ public sealed class ClaudeService
                 $"stderr: {errText.Trim()}");
         }
 
-        System.Console.WriteLine($"{Dim}🤖 Claude assistant ready ({_targetDirectory}){Reset}");
+        _logger.LogInformation("{Dim}🤖 Claude assistant ready ({Dir}){Reset}", Dim, _targetDirectory, Reset);
 
         var stdoutTask = ReadStdoutAsync(_process, ct);
-        var stderrTask = LogStderrAsync(_process, ct);
+        var stderrTask = LogStderrAsync(ct);
         _ = WatchProcessExitAsync(_process, ct);
 
         // ── Main loop ───────────────────────────────────────────
@@ -117,6 +117,8 @@ public sealed class ClaudeService
         {
             await foreach (var sentence in _input.Reader.ReadAllAsync(ct))
             {
+                _turnBuffer.Clear();
+                _turnHasContent = false;
                 _turnComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
                 var json = JsonSerializer.Serialize(new
@@ -127,12 +129,11 @@ public sealed class ClaudeService
 
                 await _stdin.WriteLineAsync(json);
 
-                // Wait for Claude to finish, with a generous safety timeout
                 var timeout = Task.Delay(TimeSpan.FromMinutes(2), ct);
                 var completed = await Task.WhenAny(_turnComplete.Task, timeout);
                 if (completed == timeout)
                 {
-                    System.Console.WriteLine($"{Yellow}⚠ Turn timed out{Reset}");
+                    _logger.LogWarning("{Yellow}⚠ Turn timed out{Reset}", Yellow, Reset);
                 }
 
                 _turnComplete = null;
@@ -141,7 +142,7 @@ public sealed class ClaudeService
         catch (OperationCanceledException) { }
         catch (IOException ex)
         {
-            System.Console.Error.WriteLine($"{Yellow}⚠ Claude process connection lost: {ex.Message}{Reset}");
+            _logger.LogError(ex, "{Yellow}⚠ Claude process connection lost{Reset}", Yellow, Reset);
         }
         finally
         {
@@ -183,8 +184,7 @@ public sealed class ClaudeService
                 }
                 catch (JsonException)
                 {
-                    // Non-JSON — echo dimmed
-                    System.Console.WriteLine($"{Dim}{line}{Reset}");
+                    _logger.LogDebug("{Dim}{Line}{Reset}", Dim, line, Reset);
                 }
             }
         }
@@ -195,21 +195,24 @@ public sealed class ClaudeService
 
     // ── Stderr reader ──────────────────────────────────────────────
 
-    private static async Task LogStderrAsync(Process process, CancellationToken ct)
+    private Task LogStderrAsync(CancellationToken ct)
     {
-        try
+        return Task.Run(async () =>
         {
-            using var reader = new StreamReader(process.StandardError.BaseStream, Encoding.UTF8);
-
-            string? line;
-            while ((line = await reader.ReadLineAsync(ct)) is not null)
+            try
             {
-                if (!string.IsNullOrWhiteSpace(line))
-                    System.Console.Error.WriteLine($"{Dim}[claude] {line}{Reset}");
+                using var reader = new StreamReader(_process!.StandardError.BaseStream, Encoding.UTF8);
+
+                string? line;
+                while ((line = await reader.ReadLineAsync(ct)) is not null)
+                {
+                    if (!string.IsNullOrWhiteSpace(line))
+                        _logger.LogWarning("{Dim}[claude] {Line}{Reset}", Dim, line, Reset);
+                }
             }
-        }
-        catch (OperationCanceledException) { }
-        catch (IOException) { }
+            catch (OperationCanceledException) { }
+            catch (IOException) { }
+        }, ct);
     }
 
     // ── Process watchdog ───────────────────────────────────────────
@@ -219,8 +222,8 @@ public sealed class ClaudeService
         try
         {
             await process.WaitForExitAsync(ct);
-            System.Console.Error.WriteLine(
-                $"{Yellow}⚠ Claude process exited unexpectedly (code {process.ExitCode}){Reset}");
+            _logger.LogWarning("{Yellow}⚠ Claude process exited unexpectedly (code {Code}){Reset}",
+                Yellow, process.ExitCode, Reset);
             _turnComplete?.TrySetResult();
         }
         catch (OperationCanceledException) { }
@@ -246,8 +249,8 @@ public sealed class ClaudeService
                 break;
 
             case "result":
-                // The result message signals end of turn
-                SignalTurnComplete();
+                FlushTurn();
+                _turnComplete?.TrySetResult();
                 break;
         }
     }
@@ -262,18 +265,33 @@ public sealed class ClaudeService
         {
             foreach (var block in content.EnumerateArray())
             {
-                RenderContentBlock(block);
+                var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
+
+                switch (blockType)
+                {
+                    case "text":
+                    {
+                        var text = block.TryGetProperty("text", out var t) ? t.GetString() : null;
+                        if (!string.IsNullOrEmpty(text))
+                            _turnBuffer.Append($"{Orange}{text}{Reset}");
+                        break;
+                    }
+
+                    case "tool_use":
+                    {
+                        _turnHasContent = true;
+                        var toolName = block.TryGetProperty("name", out var tn) ? tn.GetString() : "?";
+                        var preview = FormatToolPreview(toolName!,
+                            block.TryGetProperty("input", out var ti) ? ti : default);
+                        _turnBuffer.Append($"{Dim}[{toolName}: {preview}]{Reset}");
+                        break;
+                    }
+                }
             }
         }
     }
 
-    private void SignalTurnComplete()
-    {
-        System.Console.WriteLine();
-        _turnComplete?.TrySetResult();
-    }
-
-    private static void HandleUserMessage(JsonElement root)
+    private void HandleUserMessage(JsonElement root)
     {
         if (!root.TryGetProperty("message", out var msg))
             return;
@@ -290,34 +308,58 @@ public sealed class ClaudeService
             var toolId = block.TryGetProperty("tool_use_id", out var tid)
                 ? tid.GetString()?[..Math.Min(12, tid.GetString()!.Length)] : "?";
             var isError = block.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
-            System.Console.WriteLine($"{Dim}[tool {toolId}… {(isError ? "✗" : "✓")}]{Reset}");
+            _turnBuffer.AppendLine()
+                      .Append($"{Dim}[tool {toolId}… {(isError ? "✗" : "✓")}]{Reset}");
         }
     }
 
-    // ── Content block renderer ─────────────────────────────────────
-
-    private void RenderContentBlock(JsonElement block)
+    /// <summary>
+    /// At end of turn: if Claude only responded with "…" and used no tools,
+    /// suppress the output. Otherwise log the buffered response.
+    /// </summary>
+    private void FlushTurn()
     {
-        var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
+        var raw = StripAnsi(_turnBuffer).Trim();
 
-        switch (blockType)
+        if (_turnHasContent)
         {
-            case "text":
-            {
-                var text = block.TryGetProperty("text", out var t) ? t.GetString() : null;
-                if (!string.IsNullOrEmpty(text))
-                    System.Console.Write($"{Orange}{text}{Reset}");
-                break;
-            }
-
-            case "tool_use":
-            {
-                var toolName = block.TryGetProperty("name", out var tn) ? tn.GetString() : "?";
-                var preview = FormatToolPreview(toolName!, block.TryGetProperty("input", out var ti) ? ti : default);
-                System.Console.Write($"{Dim}[{toolName}: {preview}]{Reset}");
-                break;
-            }
+            // Real work was done — always show
+            if (raw.Length > 0)
+                _logger.LogInformation("{Text}", _turnBuffer.ToString());
         }
+        else if (raw is "…" or "...")
+        {
+            // Listening acknowledgement — suppress
+            _logger.LogDebug("{Dim}🤖 listening…{Reset}", Dim, Reset);
+        }
+        else if (raw.Length > 0)
+        {
+            // Real text response, no tools
+            _turnBuffer.AppendLine();
+            _logger.LogInformation("{Text}", _turnBuffer.ToString());
+        }
+    }
+
+    private static string StripAnsi(StringBuilder sb)
+    {
+        var result = new StringBuilder(sb.Length);
+        var inside = false;
+        for (var i = 0; i < sb.Length; i++)
+        {
+            if (sb[i] == '')
+            {
+                inside = true;
+                continue;
+            }
+            if (inside)
+            {
+                if (sb[i] is >= 'A' and <= 'Z' or >= 'a' and <= 'z')
+                    inside = false;
+                continue;
+            }
+            result.Append(sb[i]);
+        }
+        return result.ToString();
     }
 
     private static string FormatToolPreview(string name, JsonElement input)

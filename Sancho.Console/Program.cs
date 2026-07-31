@@ -9,7 +9,10 @@ ClaudeService.VerifyClaudeAvailable();
 
 var builder = Host.CreateApplicationBuilder(args);
 
-builder.Logging.AddConsole().SetMinimumLevel(LogLevel.Warning);
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole(options => options.FormatterName = "raw");
+builder.Logging.AddConsoleFormatter<RawConsoleFormatter, Microsoft.Extensions.Logging.Console.SimpleConsoleFormatterOptions>();
+builder.Logging.SetMinimumLevel(LogLevel.Information);
 
 builder.Services.AddOptions<TranscriptionOptions>()
     .Bind(builder.Configuration.GetSection("Transcription"))
@@ -30,6 +33,7 @@ builder.Services.AddSingleton<MicrophoneAudioSource>(sp =>
 
 var host = builder.Build();
 
+var logger = host.Services.GetRequiredService<ILogger<Program>>();
 var transcriptionService = host.Services.GetRequiredService<RealtimeTranscriptionService>();
 var claudeService = host.Services.GetRequiredService<ClaudeService>();
 using var micSource = host.Services.GetRequiredService<MicrophoneAudioSource>();
@@ -41,30 +45,34 @@ using var cts = new CancellationTokenSource();
 var captureTask = micSource.CaptureAsync(channel.Writer, cts.Token);
 var claudeTask = claudeService.RunAsync(cts.Token);
 
-Console.WriteLine("🎤 Live transcription + Claude assistant started.");
-Console.WriteLine("   Speak naturally. Press any key to stop.");
-Console.WriteLine("───");
+logger.LogInformation("🎤 Live transcription + Claude assistant started.");
+logger.LogInformation("   Speak naturally. Press any key to stop.");
+logger.LogInformation("───");
 
 var transcribeTask = Task.Run(async () =>
 {
     await foreach (var chunk in transcriptionService.TranscribeAsync(channel.Reader, cts.Token))
     {
-        Console.Write(chunk.Text);
         if (chunk.IsComplete)
         {
+            logger.LogInformation(""); // finish the line
             var sentence = chunk.Text.TrimStart('\n').Trim();
             if (!string.IsNullOrWhiteSpace(sentence))
                 claudeService.Enqueue(sentence);
+        }
+        else
+        {
+            logger.InfoInline("{0}", chunk.Text);
         }
     }
 });
 
 // ── Wait for user to stop ─────────────────────────────────────────
-Console.ReadKey(intercept: true);
-Console.WriteLine("\nStopping...");
+System.Console.ReadKey(intercept: true);
+logger.LogInformation("Stopping...");
 cts.Cancel();
 
 await Task.WhenAll(captureTask, transcribeTask, claudeTask);
 
-Console.WriteLine("✅ Done.");
+logger.LogInformation("✅ Done.");
 return 0;

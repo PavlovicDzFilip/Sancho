@@ -17,3 +17,11 @@
 - Claude integration: `ClaudeService` (subprocess via `claude --print --input-format stream-json --output-format stream-json`)
 - Pipeline: mic → Channel<byte[]> → transcription → Channel<string> → Claude CLI
 
+## Build Convention (Dogfooding)
+Sancho.exe is locked while running. To verify compilation without stopping:
+```
+dotnet build -o bin/staging
+```
+`bin/` is gitignored so staging builds won't be tracked. Restart Sancho from
+staging when ready to test the new build.
+

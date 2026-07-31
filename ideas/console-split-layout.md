@@ -5,32 +5,56 @@ Currently all output flows through a single log stream — transcription text, C
 responses, tool status, and system messages all interleaved with no visual separation.
 It's hard to distinguish "what I said" from "what Claude said" in real time.
 
-## Proposed: split console layout
-Divide the console into visually distinct regions:
-
-- **Transcription pane** (bottom or left) — live transcription from the cloud
-  (OpenAI Realtime API / `RealtimeTranscriptionService`). Shows what the user is
-  saying as it's being transcribed.
-- **Claude response pane** (top or right) — streaming responses from the Claude
-  CLI subprocess (`ClaudeService`). Tool calls, results, and final text.
-- **Status bar** — connection state, model name, latency, microphone level.
-
-## Architecture implications
-The two data sources are already separate in the pipeline:
+## Proposed: two-panel Spectre.Console layout
 
 ```
-mic → Channel<byte[]> → RealtimeTranscriptionService (cloud) → Channel<string> → ???
-                                                                                    ↓
-                                                                          ClaudeService (subprocess)
+┌────────────────────────────────────────────────────────┐
+│  TOP PANEL — History                                   │
+│                                                        │
+│  Scrollable backlog of everything that happened:        │
+│  past transcription, past Claude responses,             │
+│  tool calls, results. Scrolls up as new lines arrive.   │
+│                                                        │
+│  [User]  what are some of the ideas we have...          │
+│  [Sancho] Here's what we have...                        │
+│  [Tool]   git add ideas/console-split-layout.md         │
+│  [User]  I want to use Spectre.Console with panels...   │
+│  [Sancho] Got it...                                     │
+│                                                        │
+├────────────────────────────────────────────────────────┤
+│  BOTTOM PANEL — Live                                   │
+│                                                        │
+│  ▶ You: I want to use Spectre.Console with panels...    │  ← live transcription
+│  ◀ Sancho: Got it. A two-panel layout...                │  ← current Claude response
+│                                                        │
+├────────────────────────────────────────────────────────┤
+│  Status: 🟢 Connected  |  Model: gpt-live-transcribe    │
+└────────────────────────────────────────────────────────┘
 ```
 
-- Transcription text arrives via `RealtimeTranscriptionService` events
-- Claude responses arrive via `ClaudeService` parsing of `stream-json` output
+- **Top panel**: scrollable history — everything that's been said and done.
+- **Bottom panel**: the "now" — live transcription as you speak, plus whatever
+  Claude is currently streaming back.
+- **Status bar**: connection, model, mic level, latency — minimal, always visible.
 
-This idea requires a proper console framework for regions/panels (e.g. Spectre.Console,
-Terminal.Gui, or raw ANSI escape sequences for split regions).
+## Framework: Spectre.Console
+Use `Spectre.Console`'s `Layout` with named regions. Spectre handles panel
+borders, scrolling regions, live updates, and ANSI colour — all in the box.
+
+## Data sources (already separate)
+```
+mic → Channel<byte[]> → RealtimeTranscriptionService (cloud) → "You: ..."  → bottom panel
+                                                                               ↓
+                                                                     ClaudeService (subprocess)
+                                                                               ↓
+                                                                        "Sancho: ..." → bottom panel
+                                                                               ↓
+                                                                        (after turn) → top panel (history)
+```
 
 ## Relationship to other ideas
-- Pairs well with **streaming-claude-response.md** — if Claude responses stream in
-  real-time, the split layout shows them side-by-side with live transcription.
-- Console framework choice affects both features.
+- **Pairs with streaming-claude-response.md** — bottom panel shows Claude's
+  response as it streams in; after the turn ends, everything moves to the
+  history panel.
+- **Independent of transcription-models.md** — works with any transcription
+  backend.

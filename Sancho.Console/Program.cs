@@ -1,43 +1,32 @@
 using System.Threading.Channels;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Sancho;
 using Sancho.Console;
 
-// --- Build configuration ---
-var environment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? "Production";
+var builder = Host.CreateApplicationBuilder(args);
 
-var config = new ConfigurationBuilder()
-    .AddJsonFile("appsettings.json", optional: false)
-    .AddJsonFile($"appsettings.{environment}.json", optional: true)
-    .Build();
+builder.Logging.AddConsole().SetMinimumLevel(LogLevel.Warning);
 
-// --- Set up DI ---
-var services = new ServiceCollection();
-
-services.AddSingleton<IConfiguration>(config);
-services.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
-
-// Options: bind from JSON, validate eagerly
-services.AddOptions<TranscriptionOptions>()
-    .Bind(config.GetSection("Transcription"))
+builder.Services.AddOptions<TranscriptionOptions>()
+    .Bind(builder.Configuration.GetSection("Transcription"))
     .Validate(opt => !string.IsNullOrWhiteSpace(opt.ApiKey),
         "OpenAI API key is required. Set 'Transcription:ApiKey' in appsettings.json.")
     .ValidateOnStart();
 
-services.AddSingleton<RealtimeTranscriptionService>();
-services.AddSingleton<MicrophoneAudioSource>(sp =>
+builder.Services.AddSingleton<RealtimeTranscriptionService>();
+builder.Services.AddSingleton<MicrophoneAudioSource>(sp =>
 {
     var logger = sp.GetRequiredService<ILogger<MicrophoneAudioSource>>();
     return MicrophoneAudioSource.Create(logger);
 });
 
-var provider = services.BuildServiceProvider();
+var host = builder.Build();
 
-// ValidateOnStart — throws here if ApiKey is missing
-var transcriptionService = provider.GetRequiredService<RealtimeTranscriptionService>();
-using var micSource = provider.GetRequiredService<MicrophoneAudioSource>();
+// ValidateOnStart fires during Build() above — throws if ApiKey is missing
+var transcriptionService = host.Services.GetRequiredService<RealtimeTranscriptionService>();
+using var micSource = host.Services.GetRequiredService<MicrophoneAudioSource>();
 
 // --- Pipeline: mic → channel → transcription ---
 var channel = Channel.CreateUnbounded<byte[]>();

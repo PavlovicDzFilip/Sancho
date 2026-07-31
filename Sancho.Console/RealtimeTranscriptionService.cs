@@ -4,9 +4,8 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Options;
-using Sancho.Console;
 
-namespace Sancho;
+namespace Sancho.Console;
 
 /// <summary>
 /// Connects to OpenAI's realtime WebSocket API and transcribes

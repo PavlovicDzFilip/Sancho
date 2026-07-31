@@ -1,7 +1,6 @@
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using NAudio.Wave;
-using Sancho.Audio;
 
 namespace Sancho.Console;
 

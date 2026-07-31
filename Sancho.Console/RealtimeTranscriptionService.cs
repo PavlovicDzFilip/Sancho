@@ -30,7 +30,7 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
     /// and yields transcription text as it arrives. Deltas are yielded as partial
     /// text; completed transcripts are yielded prefixed with a newline.
     /// </summary>
-    public async IAsyncEnumerable<string> TranscribeAsync(
+    public async IAsyncEnumerable<TranscriptionChunk> TranscribeAsync(
         ChannelReader<byte[]> audioInput,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
@@ -71,8 +71,8 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
 
                 receiveStream.Position = 0;
                 var parsed = ParseTranscriptionEvent(receiveStream);
-                if (parsed.Text != null)
-                    yield return parsed.Text;
+                if (parsed.Chunk.HasValue)
+                    yield return parsed.Chunk.Value;
                 if (parsed.ShouldBreak)
                     break;
             }
@@ -94,7 +94,7 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
     /// Returns the text to yield (or null if nothing to emit) and a flag
     /// indicating whether the receive loop should break.
     /// </summary>
-    private static (string? Text, bool ShouldBreak) ParseTranscriptionEvent(MemoryStream stream)
+    private static (TranscriptionChunk? Chunk, bool ShouldBreak) ParseTranscriptionEvent(MemoryStream stream)
     {
         using var doc = JsonDocument.Parse(stream);
         var root = doc.RootElement;
@@ -105,7 +105,7 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
             var text = delta.GetString();
             return string.IsNullOrWhiteSpace(text)
                 ? (null, false)
-                : (text, false);
+                : (new TranscriptionChunk(text, IsComplete: false), false);
         }
 
         if (type == CompletedEventType && root.TryGetProperty("transcript", out var transcript))
@@ -113,14 +113,14 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
             var text = transcript.GetString() ?? "";
             return string.IsNullOrWhiteSpace(text)
                 ? (null, false)
-                : ("\n" + text, false);
+                : (new TranscriptionChunk("\n" + text, IsComplete: true), false);
         }
 
         if (type == ErrorEventType)
         {
             var err = root.TryGetProperty("error", out var e)
                 ? e.GetRawText() : "(no details)";
-            return ("\n[ERROR] " + err, true);
+            return (new TranscriptionChunk("\n[ERROR] " + err, IsComplete: false), true);
         }
 
         return (null, false);

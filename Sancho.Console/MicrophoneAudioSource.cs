@@ -1,16 +1,18 @@
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using NAudio.Wave;
+using Sancho.Audio;
 
-namespace Sancho.Audio;
+namespace Sancho.Console;
 
 /// <summary>
 /// Captures audio from a microphone device using NAudio and writes
-/// it as 16-bit PCM chunks at 44100 Hz into a channel.
+/// it as 16-bit PCM chunks at 24000 Hz into a channel.
 /// </summary>
 public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
 {
     private readonly int _deviceNumber;
+    private const int SampleRate = 24000;
     private readonly ILogger<MicrophoneAudioSource> _logger;
     private WaveInEvent? _waveIn;
 
@@ -31,7 +33,9 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
     /// show an interactive selector (multiple devices).
     /// </param>
     /// <returns>A configured <see cref="MicrophoneAudioSource"/> ready for capture.</returns>
-    public static MicrophoneAudioSource Create(ILogger<MicrophoneAudioSource> logger, int? deviceNumber = null)
+    public static MicrophoneAudioSource Create(
+        ILogger<MicrophoneAudioSource> logger,
+        int? deviceNumber = null)
     {
         ArgumentNullException.ThrowIfNull(logger);
 
@@ -66,7 +70,7 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
         else
         {
             selected = PromptDeviceSelection(count);
-            Console.WriteLine(); // blank line after selector
+            System.Console.WriteLine(); // blank line after selector
         }
 
         var deviceName = WaveInEvent.GetCapabilities(selected).ProductName;
@@ -81,17 +85,15 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
     private static int PromptDeviceSelection(int count)
     {
         var selected = 0;
-        var cursorTop = Console.CursorTop;
 
-        Console.WriteLine("🎤 Multiple microphones found. Use ↑/↓ to select, Enter to confirm:");
-        var promptLine = cursorTop;
-        cursorTop = Console.CursorTop; // first device line will be here
+        System.Console.WriteLine("🎤 Multiple microphones found. Use ↑/↓ to select, Enter to confirm:");
+        var cursorTop = System.Console.CursorTop; // first device line will be here
 
         RenderDeviceList(cursorTop, count, selected);
 
         while (true)
         {
-            var key = Console.ReadKey(intercept: true);
+            var key = System.Console.ReadKey(intercept: true);
 
             switch (key.Key)
             {
@@ -107,7 +109,7 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
 
                 case ConsoleKey.Enter:
                     // Move cursor to after the list and return
-                    Console.SetCursorPosition(0, cursorTop + count);
+                    System.Console.SetCursorPosition(0, cursorTop + count);
                     return selected;
             }
         }
@@ -117,14 +119,14 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
     {
         for (var i = 0; i < count; i++)
         {
-            Console.SetCursorPosition(0, top + i);
+            System.Console.SetCursorPosition(0, top + i);
 
             var caps = WaveInEvent.GetCapabilities(i);
             var prefix = i == selected ? "  ▶" : "    ";
             var line = $"{prefix} [{i}] {caps.ProductName}";
 
             // Pad with spaces to clear any previous longer text
-            Console.Write(line.PadRight(Console.WindowWidth - 1));
+            System.Console.Write(line.PadRight(System.Console.WindowWidth - 1));
         }
     }
 
@@ -133,7 +135,7 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
     {
         ArgumentNullException.ThrowIfNull(writer);
 
-        var format = new WaveFormat(44100, 16, 1); // 16-bit PCM, 44100 Hz, mono
+        var format = new WaveFormat(SampleRate, 16, 1); // 16-bit PCM, mono
         var tcs = new TaskCompletionSource();
 
         _waveIn = new WaveInEvent

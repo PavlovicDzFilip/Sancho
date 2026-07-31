@@ -3,14 +3,13 @@ using System.Threading.Channels;
 namespace Sancho.Audio;
 
 /// <summary>
-/// A source of audio that writes PCM data to a channel.
+/// A source of audio that writes 16-bit PCM data to a channel.
 /// </summary>
 public interface IAudioSource
 {
     /// <summary>
     /// Begin capturing audio and writing it to <paramref name="writer"/>.
-    /// Each written <see cref="byte"/>[] is a chunk of 16-bit PCM data
-    /// at 44100 Hz sample rate.
+    /// Each written <see cref="byte"/>[] is a chunk of 16-bit PCM data.
     /// </summary>
     /// <param name="writer">The channel to write audio chunks into.</param>
     /// <param name="cancellationToken">Cancel to stop capture.</param>

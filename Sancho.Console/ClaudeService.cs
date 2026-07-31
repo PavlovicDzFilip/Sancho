@@ -273,7 +273,7 @@ public sealed class ClaudeService
                     {
                         var text = block.TryGetProperty("text", out var t) ? t.GetString() : null;
                         if (!string.IsNullOrEmpty(text))
-                            _turnBuffer.Append($"{Orange}{text}{Reset}");
+                            _turnBuffer.Append(text);
                         break;
                     }
 
@@ -283,7 +283,7 @@ public sealed class ClaudeService
                         var toolName = block.TryGetProperty("name", out var tn) ? tn.GetString() : "?";
                         var preview = FormatToolPreview(toolName!,
                             block.TryGetProperty("input", out var ti) ? ti : default);
-                        _turnBuffer.Append($"{Dim}[{toolName}: {preview}]{Reset}");
+                        _turnBuffer.AppendLine().Append($"{Dim}[{toolName}: {preview}]{Orange}");
                         break;
                     }
                 }
@@ -309,57 +309,39 @@ public sealed class ClaudeService
                 ? tid.GetString()?[..Math.Min(12, tid.GetString()!.Length)] : "?";
             var isError = block.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
             _turnBuffer.AppendLine()
-                      .Append($"{Dim}[tool {toolId}… {(isError ? "✗" : "✓")}]{Reset}");
+                      .Append($"{Dim}[tool {toolId}… {(isError ? "✗" : "✓")}]{Orange}");
         }
     }
 
     /// <summary>
-    /// At end of turn: if Claude only responded with "…" and used no tools,
-    /// suppress the output. Otherwise log the buffered response.
+    /// At end of turn: check the response content and render in the appropriate mode.
     /// </summary>
     private void FlushTurn()
     {
-        var raw = StripAnsi(_turnBuffer).Trim();
+        var raw = _turnBuffer.ToString().Trim();
+        string? output = null;
 
         if (_turnHasContent)
         {
-            // Real work was done — always show
-            if (raw.Length > 0)
-                _logger.LogInformation("{Text}", _turnBuffer.ToString());
+            output = raw.Length > 0
+                ? $"{Orange}{_turnBuffer}{Reset}\n"
+                : "\n";
         }
         else if (raw is "…" or "...")
         {
-            // Listening acknowledgement — suppress
             _logger.LogDebug("{Dim}🤖 listening…{Reset}", Dim, Reset);
+        }
+        else if (raw.StartsWith("\U0001F4A1"))
+        {
+            output = $"{Dim}{raw}{Reset}";
         }
         else if (raw.Length > 0)
         {
-            // Real text response, no tools
-            _turnBuffer.AppendLine();
-            _logger.LogInformation("{Text}", _turnBuffer.ToString());
+            output = $"{Orange}{raw}{Reset}";
         }
-    }
 
-    private static string StripAnsi(StringBuilder sb)
-    {
-        var result = new StringBuilder(sb.Length);
-        var inside = false;
-        for (var i = 0; i < sb.Length; i++)
-        {
-            if (sb[i] == '')
-            {
-                inside = true;
-                continue;
-            }
-            if (inside)
-            {
-                if (sb[i] is >= 'A' and <= 'Z' or >= 'a' and <= 'z')
-                    inside = false;
-                continue;
-            }
-            result.Append(sb[i]);
-        }
-        return result.ToString();
+        if (output is not null)
+            _logger.LogInformation("{Text}", output);
     }
 
     private static string FormatToolPreview(string name, JsonElement input)

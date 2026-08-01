@@ -32,6 +32,9 @@ public sealed class Orchestrator(
         display.History.AppendLine("🎤 Live transcription + Claude assistant started.");
         display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
 
+        // Render the transcript panel immediately so the task area is visible on startup.
+        display.Transcript.Clear();
+
         var claudeTask = ConsumeClaudeEventsAsync(claudeEvents, cts.Token);
         var transcribeTask = RunTranscriptionLoopAsync(
             channel.Reader.ReadAllAsync(cts.Token), cts.Token);

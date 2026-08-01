@@ -1,22 +1,21 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Sancho.Console.Services;
 
+/// <summary>
+/// Thin wrapper around the Claude CLI. Call <see cref="RunAsync"/> to get
+/// a stream of <see cref="ClaudeEvent"/>s, then call <see cref="Send"/> when
+/// a <see cref="ClaudeEvent.Ready"/> event arrives.
+/// </summary>
 public sealed class ClaudeService
 {
-    private const string Orange = "[38;5;214m";
-    private const string Dim    = "[38;5;240m";
-    private const string Yellow = "[38;5;220m";
-    private const string Reset  = "[0m";
-
     private readonly string _targetDirectory;
     private readonly string _systemPrompt;
-    private readonly ILogger<ClaudeService> _logger;
     private readonly Channel<string> _input = Channel.CreateUnbounded<string>();
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -26,24 +25,28 @@ public sealed class ClaudeService
     private Process? _process;
     private StreamWriter? _stdin;
     private TaskCompletionSource? _turnComplete;
-    private readonly StringBuilder _turnBuffer = new();
-    private bool _turnHasContent;
+    private volatile bool _ready;
 
-    public ClaudeService(IOptions<ClaudeOptions> options, ILogger<ClaudeService> logger)
+    public ClaudeService(IOptions<ClaudeOptions> options)
     {
         var o = options.Value;
         _targetDirectory = string.IsNullOrWhiteSpace(o.TargetDirectory)
             ? Environment.CurrentDirectory
             : o.TargetDirectory;
         _systemPrompt = o.SystemPrompt;
-        _logger = logger;
     }
 
     // ── Public API ─────────────────────────────────────────────────
 
-    public bool Enqueue(string sentence)
+    /// <summary>
+    /// Send a sentence to Claude. Throws if the service is not in a
+    /// <see cref="ClaudeEvent.Ready"/> state.
+    /// </summary>
+    public void Send(string sentence)
     {
-        return _input.Writer.TryWrite(sentence);
+        if (!_ready)
+            throw new InvalidOperationException("Claude is not ready to accept input.");
+        _input.Writer.TryWrite(sentence);
     }
 
     public static void VerifyClaudeAvailable()
@@ -73,8 +76,14 @@ public sealed class ClaudeService
         }
     }
 
-    public async Task RunAsync(CancellationToken ct)
+    /// <summary>
+    /// Start the Claude process and return a stream of events.
+    /// Enumeration is lazy — the process starts on first MoveNext.
+    /// </summary>
+    public async IAsyncEnumerable<ClaudeEvent> RunAsync(
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
+        // ── Spawn process ────────────────────────────────────────
         var escapedPrompt = _systemPrompt.Replace("\"", "\\\"");
         var args = $"--print --verbose --input-format stream-json --output-format stream-json --permission-mode bypassPermissions --system-prompt \"{escapedPrompt}\"";
 
@@ -96,7 +105,7 @@ public sealed class ClaudeService
             AutoFlush = true
         };
 
-        // Startup health check
+        // Health check
         await Task.Delay(1500, ct);
         if (_process.HasExited)
         {
@@ -106,20 +115,59 @@ public sealed class ClaudeService
                 $"stderr: {errText.Trim()}");
         }
 
-        _logger.LogInformation("{Dim}🤖 Claude assistant ready ({Dir}){Reset}", Dim, _targetDirectory, Reset);
+        // ── Event channel — bridges background tasks → enumerable ─
+        var events = Channel.CreateUnbounded<ClaudeEvent>();
 
-        var stdoutTask = ReadStdoutAsync(_process, ct);
-        var stderrTask = LogStderrAsync(ct);
-        _ = WatchProcessExitAsync(_process, ct);
+        // Complete the channel when cancelled so ReadAllAsync exits cleanly
+        await using var reg = ct.Register(() => events.Writer.TryComplete());
 
-        // ── Main loop ───────────────────────────────────────────
+        var stdoutTask = ReadStdoutAsync(_process, events.Writer, ct);
+        var stderrTask = ReadStderrAsync(_process, events.Writer, ct);
+        var watchdogTask = WatchProcessAsync(_process, events.Writer, ct);
+        var inputTask = ProcessInputAsync(events.Writer, ct);
+
+        // Yield events as they arrive
+        await foreach (var evt in events.Reader.ReadAllAsync(ct))
+            yield return evt;
+
+        // ── Cleanup ──────────────────────────────────────────────
         try
         {
+            _stdin.Close();
+        }
+        catch
+        {
+            // Nothing to do
+        }
+
+        if (!_process.HasExited)
+        {
+            await Task.WhenAny(
+                Task.WhenAll(stdoutTask, stderrTask, watchdogTask, inputTask),
+                Task.Delay(3_000, ct));
+            
+            if (!_process.HasExited)
+                _process.Kill(entireProcessTree: true);
+        }
+
+        await Task.WhenAll(stdoutTask, stderrTask, watchdogTask, inputTask);
+    }
+
+    // ── Input processor ────────────────────────────────────────────
+
+    private async Task ProcessInputAsync(ChannelWriter<ClaudeEvent> writer, CancellationToken ct)
+    {
+        try
+        {
+            _ready = true;
+            writer.TryWrite(ClaudeEvent.Ready.Instance);
+
             await foreach (var sentence in _input.Reader.ReadAllAsync(ct))
             {
-                _turnBuffer.Clear();
-                _turnHasContent = false;
-                _turnComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _ready = false;
+
+                var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _turnComplete = tcs;
 
                 var json = JsonSerializer.Serialize(new
                 {
@@ -127,52 +175,40 @@ public sealed class ClaudeService
                     message = new { role = "user", content = sentence }
                 }, _jsonOptions);
 
-                await _stdin.WriteLineAsync(json);
+                await _stdin!.WriteLineAsync(json);
+                writer.TryWrite(ClaudeEvent.TurnStart.Instance);
 
                 var timeout = Task.Delay(TimeSpan.FromMinutes(2), ct);
-                var completed = await Task.WhenAny(_turnComplete.Task, timeout);
+                var completed = await Task.WhenAny(tcs.Task, timeout);
                 if (completed == timeout)
                 {
-                    _logger.LogWarning("{Yellow}⚠ Turn timed out{Reset}", Yellow, Reset);
+                    writer.TryWrite(new ClaudeEvent.Status(
+                        "⚠ Turn timed out", ClaudeStatusKind.Warning));
                 }
 
                 _turnComplete = null;
+                _ready = true;
+                writer.TryWrite(ClaudeEvent.Ready.Instance);
             }
         }
         catch (OperationCanceledException) { }
         catch (IOException ex)
         {
-            _logger.LogError(ex, "{Yellow}⚠ Claude process connection lost{Reset}", Yellow, Reset);
+            writer.TryWrite(new ClaudeEvent.Error(
+                $"Claude process connection lost: {ex.Message}"));
         }
-        finally
-        {
-            try { _stdin.Close(); } catch { }
-        }
-
-        try
-        {
-            if (!_process.HasExited)
-            {
-                await Task.WhenAny(stdoutTask, Task.Delay(3_000, ct));
-                if (!_process.HasExited)
-                    _process.Kill(entireProcessTree: true);
-            }
-        }
-        catch { }
-
-        await Task.WhenAll(stdoutTask, stderrTask);
     }
 
     // ── Stdout reader ──────────────────────────────────────────────
 
-    private async Task ReadStdoutAsync(Process process, CancellationToken ct)
+    private async Task ReadStdoutAsync(
+        Process process, ChannelWriter<ClaudeEvent> writer, CancellationToken ct)
     {
         try
         {
             using var reader = new StreamReader(process.StandardOutput.BaseStream, Encoding.UTF8);
 
-            string? line;
-            while ((line = await reader.ReadLineAsync(ct)) is not null)
+            while (await reader.ReadLineAsync(ct) is { } line)
             {
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
@@ -180,11 +216,11 @@ public sealed class ClaudeService
                 try
                 {
                     using var doc = JsonDocument.Parse(line);
-                    HandleStreamMessage(doc.RootElement);
+                    HandleStreamMessage(doc.RootElement, writer);
                 }
                 catch (JsonException)
                 {
-                    _logger.LogDebug("{Dim}{Line}{Reset}", Dim, line, Reset);
+                    writer.TryWrite(new ClaudeEvent.Status(line, ClaudeStatusKind.Info));
                 }
             }
         }
@@ -195,35 +231,33 @@ public sealed class ClaudeService
 
     // ── Stderr reader ──────────────────────────────────────────────
 
-    private Task LogStderrAsync(CancellationToken ct)
+    private async Task ReadStderrAsync(
+        Process process, ChannelWriter<ClaudeEvent> writer, CancellationToken ct)
     {
-        return Task.Run(async () =>
+        try
         {
-            try
-            {
-                using var reader = new StreamReader(_process!.StandardError.BaseStream, Encoding.UTF8);
+            using var reader = new StreamReader(process.StandardError.BaseStream, Encoding.UTF8);
 
-                string? line;
-                while ((line = await reader.ReadLineAsync(ct)) is not null)
-                {
-                    if (!string.IsNullOrWhiteSpace(line))
-                        _logger.LogWarning("{Dim}[claude] {Line}{Reset}", Dim, line, Reset);
-                }
+            while (await reader.ReadLineAsync(ct) is { } line)
+            {
+                if (!string.IsNullOrWhiteSpace(line))
+                    writer.TryWrite(new ClaudeEvent.Status(line, ClaudeStatusKind.Stderr));
             }
-            catch (OperationCanceledException) { }
-            catch (IOException) { }
-        }, ct);
+        }
+        catch (OperationCanceledException) { }
+        catch (IOException) { }
     }
 
     // ── Process watchdog ───────────────────────────────────────────
 
-    private async Task WatchProcessExitAsync(Process process, CancellationToken ct)
+    private async Task WatchProcessAsync(
+        Process process, ChannelWriter<ClaudeEvent> writer, CancellationToken ct)
     {
         try
         {
             await process.WaitForExitAsync(ct);
-            _logger.LogWarning("{Yellow}⚠ Claude process exited unexpectedly (code {Code}){Reset}",
-                Yellow, process.ExitCode, Reset);
+            writer.TryWrite(new ClaudeEvent.Error(
+                $"Claude process exited unexpectedly (code {process.ExitCode})"));
             _turnComplete?.TrySetResult();
         }
         catch (OperationCanceledException) { }
@@ -231,7 +265,7 @@ public sealed class ClaudeService
 
     // ── Stream-json message dispatcher ─────────────────────────────
 
-    private void HandleStreamMessage(JsonElement root)
+    private void HandleStreamMessage(JsonElement root, ChannelWriter<ClaudeEvent> writer)
     {
         var type = root.TryGetProperty("type", out var tp) ? tp.GetString() : null;
 
@@ -241,21 +275,21 @@ public sealed class ClaudeService
                 break;
 
             case "assistant":
-                HandleAssistantMessage(root);
+                HandleAssistantMessage(root, writer);
                 break;
 
             case "user":
-                HandleUserMessage(root);
+                HandleUserMessage(root, writer);
                 break;
 
             case "result":
-                FlushTurn();
+                writer.TryWrite(ClaudeEvent.TurnComplete.Instance);
                 _turnComplete?.TrySetResult();
                 break;
         }
     }
 
-    private void HandleAssistantMessage(JsonElement root)
+    private static void HandleAssistantMessage(JsonElement root, ChannelWriter<ClaudeEvent> writer)
     {
         if (!root.TryGetProperty("message", out var msg))
             return;
@@ -273,17 +307,16 @@ public sealed class ClaudeService
                     {
                         var text = block.TryGetProperty("text", out var t) ? t.GetString() : null;
                         if (!string.IsNullOrEmpty(text))
-                            _turnBuffer.Append(text);
+                            writer.TryWrite(new ClaudeEvent.AssistantText(text));
                         break;
                     }
 
                     case "tool_use":
                     {
-                        _turnHasContent = true;
                         var toolName = block.TryGetProperty("name", out var tn) ? tn.GetString() : "?";
                         var preview = FormatToolPreview(toolName!,
                             block.TryGetProperty("input", out var ti) ? ti : default);
-                        _turnBuffer.AppendLine().Append($"{Dim}[{toolName}: {preview}]{Orange}");
+                        writer.TryWrite(new ClaudeEvent.ToolUse(toolName!, preview));
                         break;
                     }
                 }
@@ -291,7 +324,7 @@ public sealed class ClaudeService
         }
     }
 
-    private void HandleUserMessage(JsonElement root)
+    private static void HandleUserMessage(JsonElement root, ChannelWriter<ClaudeEvent> writer)
     {
         if (!root.TryGetProperty("message", out var msg))
             return;
@@ -308,40 +341,8 @@ public sealed class ClaudeService
             var toolId = block.TryGetProperty("tool_use_id", out var tid)
                 ? tid.GetString()?[..Math.Min(12, tid.GetString()!.Length)] : "?";
             var isError = block.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
-            _turnBuffer.AppendLine()
-                      .Append($"{Dim}[tool {toolId}… {(isError ? "✗" : "✓")}]{Orange}");
+            writer.TryWrite(new ClaudeEvent.ToolResult(toolId!, isError));
         }
-    }
-
-    /// <summary>
-    /// At end of turn: check the response content and render in the appropriate mode.
-    /// </summary>
-    private void FlushTurn()
-    {
-        var raw = _turnBuffer.ToString().Trim();
-        string? output = null;
-
-        if (_turnHasContent)
-        {
-            output = raw.Length > 0
-                ? $"{Orange}{_turnBuffer}{Reset}\n"
-                : "\n";
-        }
-        else if (raw is "…" or "...")
-        {
-            _logger.LogDebug("{Dim}🤖 listening…{Reset}", Dim, Reset);
-        }
-        else if (raw.StartsWith("\U0001F4A1"))
-        {
-            output = $"{Dim}{raw}{Reset}";
-        }
-        else if (raw.Length > 0)
-        {
-            output = $"{Orange}{raw}{Reset}";
-        }
-
-        if (output is not null)
-            _logger.LogInformation("{Text}", output);
     }
 
     private static string FormatToolPreview(string name, JsonElement input)

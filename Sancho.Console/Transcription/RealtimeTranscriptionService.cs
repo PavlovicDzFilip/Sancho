@@ -2,7 +2,6 @@ using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
-using System.Threading.Channels;
 using Microsoft.Extensions.Options;
 
 namespace Sancho.Console.Transcription;
@@ -27,17 +26,15 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
 
     /// <summary>
     /// Reads PCM16 chunks from <paramref name="audioInput"/>, sends them to OpenAI,
-    /// and yields transcription text as it arrives. Deltas are yielded as partial
-    /// text; completed transcripts are yielded prefixed with a newline.
+    /// and yields transcription events as they arrive.
     /// </summary>
-    public async IAsyncEnumerable<TranscriptionChunk> TranscribeAsync(
-        ChannelReader<byte[]> audioInput,
+    public async IAsyncEnumerable<TranscriptionEvent> TranscribeAsync(
+        IAsyncEnumerable<byte[]> audioInput,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         using var ws = new ClientWebSocket();
         ws.Options.SetRequestHeader("Authorization", $"Bearer {_apiKey}");
 
-        WebSocketReceiveResult? result = null;
         try
         {
             await ws.ConnectAsync(RealtimeUri, ct);
@@ -56,6 +53,7 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
             while (!ct.IsCancellationRequested)
             {
                 receiveStream.SetLength(0);
+                WebSocketReceiveResult? result;
                 try
                 {
                     do
@@ -66,13 +64,13 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
                 }
                 catch (OperationCanceledException) { break; }
 
-                if (result is null || result.MessageType == WebSocketMessageType.Close)
+                if (result.MessageType == WebSocketMessageType.Close)
                     break;
 
                 receiveStream.Position = 0;
                 var parsed = ParseTranscriptionEvent(receiveStream);
-                if (parsed.Chunk.HasValue)
-                    yield return parsed.Chunk.Value;
+                if (parsed.Event is not null)
+                    yield return parsed.Event;
                 if (parsed.ShouldBreak)
                     break;
             }
@@ -83,8 +81,14 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
             await feedTask;
             if (ws.State == WebSocketState.Open)
             {
-                try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); }
-                catch { }
+                try
+                {
+                    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+                }
+                catch
+                {
+                    // nothing to do, we are closing the stream already
+                }
             }
         }
     }
@@ -94,7 +98,7 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
     /// Returns the text to yield (or null if nothing to emit) and a flag
     /// indicating whether the receive loop should break.
     /// </summary>
-    private static (TranscriptionChunk? Chunk, bool ShouldBreak) ParseTranscriptionEvent(MemoryStream stream)
+    private static (TranscriptionEvent? Event, bool ShouldBreak) ParseTranscriptionEvent(MemoryStream stream)
     {
         using var doc = JsonDocument.Parse(stream);
         var root = doc.RootElement;
@@ -105,7 +109,7 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
             var text = delta.GetString();
             return string.IsNullOrWhiteSpace(text)
                 ? (null, false)
-                : (new TranscriptionChunk(text, IsComplete: false), false);
+                : (new TranscriptionEvent.Delta(text), false);
         }
 
         if (type == CompletedEventType && root.TryGetProperty("transcript", out var transcript))
@@ -113,14 +117,14 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
             var text = transcript.GetString() ?? "";
             return string.IsNullOrWhiteSpace(text)
                 ? (null, false)
-                : (new TranscriptionChunk("\n" + text, IsComplete: true), false);
+                : (new TranscriptionEvent.Completed(text), false);
         }
 
         if (type == ErrorEventType)
         {
             var err = root.TryGetProperty("error", out var e)
                 ? e.GetRawText() : "(no details)";
-            return (new TranscriptionChunk("\n[ERROR] " + err, IsComplete: false), true);
+            return (new TranscriptionEvent.Error(err), true);
         }
 
         return (null, false);
@@ -128,13 +132,13 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
 
     private static async Task FeedAudioAsync(
         ClientWebSocket ws,
-        ChannelReader<byte[]> input,
+        IAsyncEnumerable<byte[]> input,
         TaskCompletionSource audioDone,
         CancellationToken ct)
     {
         try
         {
-            await foreach (var chunk in input.ReadAllAsync(ct))
+            await foreach (var chunk in input.WithCancellation(ct))
             {
                 var base64 = Convert.ToBase64String(chunk);
                 try

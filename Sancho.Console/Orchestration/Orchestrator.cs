@@ -33,7 +33,8 @@ public sealed class Orchestrator(
         logger.LogInformation("   Speak naturally. Press any key to stop.");
         logger.LogInformation("───");
 
-        var transcribeTask = RunTranscriptionLoopAsync(channel.Reader, cts.Token);
+        var transcribeTask = RunTranscriptionLoopAsync(
+            channel.Reader.ReadAllAsync(cts.Token), cts.Token);
 
         // ── Wait for user to stop ─────────────────────────────────
         System.Console.ReadKey(intercept: true);
@@ -46,20 +47,26 @@ public sealed class Orchestrator(
         logger.LogInformation("✅ Done.");
     }
 
-    private async Task RunTranscriptionLoopAsync(ChannelReader<byte[]> audioInput, CancellationToken ct)
+    private async Task RunTranscriptionLoopAsync(IAsyncEnumerable<byte[]> audioInput, CancellationToken ct)
     {
-        await foreach (var chunk in transcriptionService.TranscribeAsync(audioInput, ct))
+        await foreach (var evt in transcriptionService.TranscribeAsync(audioInput, ct))
         {
-            if (chunk.IsComplete)
+            switch (evt)
             {
-                logger.LogInformation(""); // finish the line
-                var sentence = chunk.Text.TrimStart('\n').Trim();
-                if (!string.IsNullOrWhiteSpace(sentence))
-                    claudeService.Enqueue(sentence);
-            }
-            else
-            {
-                logger.InfoInline("{0}", chunk.Text);
+                case TranscriptionEvent.Delta delta:
+                    logger.InfoInline("{0}", delta.Text);
+                    break;
+
+                case TranscriptionEvent.Completed completed:
+                    logger.LogInformation(""); // finish the inline line
+                    var sentence = completed.Transcript.Trim();
+                    if (!string.IsNullOrWhiteSpace(sentence))
+                        claudeService.Enqueue(sentence);
+                    break;
+
+                case TranscriptionEvent.Error error:
+                    logger.LogWarning("Transcription error: {Message}", error.Message);
+                    break;
             }
         }
     }

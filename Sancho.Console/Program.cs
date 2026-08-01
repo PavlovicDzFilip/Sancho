@@ -26,11 +26,9 @@ builder.Services.AddOptions<TranscriptionOptions>()
 builder.Services.AddOptions<ClaudeOptions>()
     .Bind(builder.Configuration.GetSection("Claude"));
 
+builder.Services.AddSingleton<MicrophoneAudioSourceFactory>();
 builder.Services.AddSingleton<IAudioSource>(sp =>
-{
-    var logger = sp.GetRequiredService<ILogger<MicrophoneAudioSource>>();
-    return MicrophoneAudioSource.Create(logger);
-});
+    sp.GetRequiredService<MicrophoneAudioSourceFactory>().Create());
 builder.Services.AddSingleton<RealtimeTranscriptionService>();
 builder.Services.AddSingleton<ClaudeService>();
 builder.Services.AddSingleton<Orchestrator>();

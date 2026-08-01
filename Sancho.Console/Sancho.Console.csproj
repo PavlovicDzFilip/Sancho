@@ -16,6 +16,7 @@
       <Content Include="appsettings.Development.json">
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       </Content>
+      <PackageReference Include="Spectre.Console" Version="0.57.2" />
     </ItemGroup>
 
 </Project>

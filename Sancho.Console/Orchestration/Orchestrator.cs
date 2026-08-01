@@ -1,9 +1,9 @@
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Sancho.Console.Audio;
-using Sancho.Console.Logging;
 using Sancho.Console.Services;
 using Sancho.Console.Transcription;
+using Spectre.Console;
 
 namespace Sancho.Console.Orchestration;
 
@@ -16,44 +16,40 @@ public sealed class Orchestrator(
 {
     private readonly object _bufferLock = new();
     private readonly List<string> _buffer = new();
-    private bool _claudeIsReady = false;
+    private bool _claudeIsReady;
+    private string? _currentDelta;
 
     public async Task RunAsync(CancellationToken ct)
     {
-        // 1. Select microphone
         var audioSource = audioSourceFactory.Create();
-
-        // 2. Start the live display
         display.Start();
 
-        // 3. Begin capture
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var channel = Channel.CreateUnbounded<byte[]>();
 
         var captureTask = audioSource.CaptureAsync(channel.Writer, cts.Token);
-
-        // 4. Start Claude — returns an event stream, lazy until enumerated
         var claudeEvents = claudeService.RunAsync(cts.Token);
 
-        logger.LogInformation("🎤 Live transcription + Claude assistant started.");
-        logger.LogInformation("   Speak naturally. Press any key to stop.");
-        logger.LogInformation("───");
+        display.History.AppendLine(Markup.Escape("🎤 Live transcription + Claude assistant started."));
+        display.History.AppendLine(Markup.Escape("   Speak naturally. Press any key to stop."));
 
-        // 5. Consume Claude events in background
         var claudeTask = ConsumeClaudeEventsAsync(claudeEvents, cts.Token);
-
-        // 6. Transcription loop
         var transcribeTask = RunTranscriptionLoopAsync(
             channel.Reader.ReadAllAsync(cts.Token), cts.Token);
 
-        // ── Wait for user to stop ─────────────────────────────────
-        System.Console.ReadKey(intercept: true);
-        logger.LogInformation("Stopping...");
+        // Escape to stop, arrow keys scroll the history panel
+        while (true)
+        {
+            var key = System.Console.ReadKey(intercept: true);
+            if (!display.HandleScrollKey(key))
+                break;
+        }
+        display.History.AppendLine(Markup.Escape("Stopping..."));
 
         await cts.CancelAsync();
         await Task.WhenAll(captureTask, transcribeTask, claudeTask);
 
-        logger.LogInformation("✅ Done.");
+        display.History.AppendLine(Markup.Escape("✅ Done."));
     }
 
     // ── Claude event consumer ──────────────────────────────────────
@@ -65,46 +61,46 @@ public sealed class Orchestrator(
         {
             await foreach (var evt in events.WithCancellation(ct))
             {
-                logger.LogDebug($"Received event: {evt.GetType().Name}");
                 switch (evt)
                 {
                     case ClaudeEvent.Ready:
                         lock (_bufferLock)
-                        {
                             _claudeIsReady = true;
-                        }
-
                         TryFlushBuffer();
                         break;
 
                     case ClaudeEvent.TurnStart:
-                        logger.LogInformation("───");
+                        display.History.AppendLine("[#FF8C00]🤖 ");
                         break;
 
                     case ClaudeEvent.AssistantText(var text):
-                        logger.InfoInline("{0}", text);
+                        display.History.AppendInline(Markup.Escape(text));
                         break;
 
                     case ClaudeEvent.ToolUse(var name, var preview):
-                        logger.LogInformation(""); // finish inline text
-                        logger.LogInformation("  [{Name}: {Preview}]", name, preview);
+                        display.History.AppendInline("[/]");
+                        display.History.FinishLine();
+                        display.History.AppendLine(
+                            $"[dim]  🔧 {Markup.Escape(name)}: {Markup.Escape(preview)}[/]");
                         break;
 
                     case ClaudeEvent.ToolResult(var toolId, var isError):
-                        logger.LogInformation("  [tool {Id}… {Status}]",
-                            toolId, isError ? "✗" : "✓");
+                        display.History.AppendLine(
+                            $"[dim]  [tool {toolId}… {(isError ? "✗" : "✓")}][/]");
                         break;
 
                     case ClaudeEvent.TurnComplete:
-                        logger.LogInformation(""); // finish inline
+                        display.History.AppendInline("[/]");
+                        display.History.FinishLine();
                         break;
 
                     case ClaudeEvent.Status(var msg, _):
-                        logger.LogInformation("{Msg}", msg);
+                        display.History.AppendLine(Markup.Escape(msg));
                         break;
 
                     case ClaudeEvent.Error(var msg):
                         logger.LogError("Claude error: {Msg}", msg);
+                        display.History.AppendLine(Markup.Escape($"⚠ {msg}"));
                         break;
                 }
             }
@@ -124,19 +120,18 @@ public sealed class Orchestrator(
             switch (evt)
             {
                 case TranscriptionEvent.Delta delta:
-                    logger.InfoInline("{0}", delta.Text);
+                    _currentDelta = (_currentDelta ?? "") + delta.Text;
+                    UpdateTranscript();
                     break;
 
                 case TranscriptionEvent.Completed completed:
-                    logger.LogInformation(""); // finish the inline line
+                    _currentDelta = null;
                     var sentence = completed.Transcript.Trim();
                     if (!string.IsNullOrWhiteSpace(sentence))
                     {
                         lock (_bufferLock)
-                        {
                             _buffer.Add(sentence);
-                        }
-
+                        UpdateTranscript();
                         TryFlushBuffer();
                     }
 
@@ -149,24 +144,33 @@ public sealed class Orchestrator(
         }
     }
 
+    // ── Transcript panel ───────────────────────────────────────────
+
+    private void UpdateTranscript()
+    {
+        display.Transcript.Set(_buffer, _currentDelta);
+    }
+
     // ── Buffer flush ───────────────────────────────────────────────
 
     private void TryFlushBuffer()
     {
+        string? combined;
         lock (_bufferLock)
         {
             if (!_claudeIsReady)
-            {
-                logger.LogDebug("AI agent is not ready, not flushing messages.");
                 return;
-            }
 
-            var combined = string.Join(Environment.NewLine, _buffer);
+            combined = string.Join("\n", _buffer);
             _buffer.Clear();
             if (!string.IsNullOrEmpty(combined))
             {
-                logger.LogDebug("Sending prompt");
+                foreach (var line in combined.Split('\n'))
+                    display.History.AppendLine($"[bold]👤 {Markup.Escape(line)}[/]");
+
+                display.Transcript.Clear();
                 claudeService.Send(combined);
+                _claudeIsReady = false;
             }
         }
     }

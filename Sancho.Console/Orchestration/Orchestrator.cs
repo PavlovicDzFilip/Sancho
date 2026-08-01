@@ -92,13 +92,11 @@ public sealed class Orchestrator(
                         break;
 
                     case ClaudeEvent.Status(var msg, _):
-                        System.Console.WriteLine(msg);
                         display.History.AppendLine(msg);
                         break;
 
                     case ClaudeEvent.Error(var msg):
                         logger.LogError("Claude error: {Msg}", msg);
-                        System.Console.WriteLine(msg);
                         display.History.AppendLine($"⚠ {msg}");
                         break;
                 }

@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging.Console;
 using Microsoft.Extensions.Options;
 
-namespace Sancho.Console;
+namespace Sancho.Console.Logging;
 
 /// <summary>
 /// A console formatter that writes just the message with no category,

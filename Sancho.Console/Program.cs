@@ -1,8 +1,11 @@
-using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Sancho.Console;
+using Sancho.Console.Audio;
+using Sancho.Console.Logging;
+using Sancho.Console.Orchestration;
+using Sancho.Console.Services;
+using Sancho.Console.Transcription;
 
 // ── Verify prerequisites ──────────────────────────────────────────
 ClaudeService.VerifyClaudeAvailable();
@@ -23,56 +26,20 @@ builder.Services.AddOptions<TranscriptionOptions>()
 builder.Services.AddOptions<ClaudeOptions>()
     .Bind(builder.Configuration.GetSection("Claude"));
 
-builder.Services.AddSingleton<RealtimeTranscriptionService>();
-builder.Services.AddSingleton<ClaudeService>();
-builder.Services.AddSingleton<MicrophoneAudioSource>(sp =>
+builder.Services.AddSingleton<IAudioSource>(sp =>
 {
     var logger = sp.GetRequiredService<ILogger<MicrophoneAudioSource>>();
     return MicrophoneAudioSource.Create(logger);
 });
+builder.Services.AddSingleton<RealtimeTranscriptionService>();
+builder.Services.AddSingleton<ClaudeService>();
+builder.Services.AddSingleton<Orchestrator>();
 
 var host = builder.Build();
 
-var logger = host.Services.GetRequiredService<ILogger<Program>>();
-var transcriptionService = host.Services.GetRequiredService<RealtimeTranscriptionService>();
-var claudeService = host.Services.GetRequiredService<ClaudeService>();
-using var micSource = host.Services.GetRequiredService<MicrophoneAudioSource>();
-
-// ── Pipeline: mic → channel → transcription → console + claude ────
-var channel = Channel.CreateUnbounded<byte[]>();
-
 using var cts = new CancellationTokenSource();
-var captureTask = micSource.CaptureAsync(channel.Writer, cts.Token);
-var claudeTask = claudeService.RunAsync(cts.Token);
+var orchestrator = host.Services.GetRequiredService<Orchestrator>();
 
-logger.LogInformation("🎤 Live transcription + Claude assistant started.");
-logger.LogInformation("   Speak naturally. Press any key to stop.");
-logger.LogInformation("───");
+await orchestrator.RunAsync(cts.Token);
 
-var transcribeTask = Task.Run(async () =>
-{
-    await foreach (var chunk in transcriptionService.TranscribeAsync(channel.Reader, cts.Token))
-    {
-        if (chunk.IsComplete)
-        {
-            logger.LogInformation(""); // finish the line
-            var sentence = chunk.Text.TrimStart('\n').Trim();
-            if (!string.IsNullOrWhiteSpace(sentence))
-                claudeService.Enqueue(sentence);
-        }
-        else
-        {
-            logger.InfoInline("{0}", chunk.Text);
-        }
-    }
-});
-
-// ── Wait for user to stop ─────────────────────────────────────────
-System.Console.ReadKey(intercept: true);
-logger.LogInformation("Stopping...");
-cts.Cancel();
-
-await Task.WhenAll(captureTask, transcribeTask, claudeTask);
-
-logger.LogInformation("✅ Done.");
 return 0;

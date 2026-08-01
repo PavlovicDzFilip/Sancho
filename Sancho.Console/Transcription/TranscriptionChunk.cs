@@ -1,4 +1,4 @@
-namespace Sancho.Console;
+namespace Sancho.Console.Transcription;
 
 /// <summary>
 /// A chunk of transcription text yielded by <see cref="RealtimeTranscriptionService"/>.

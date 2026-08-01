@@ -1,4 +1,4 @@
-namespace Sancho.Console;
+namespace Sancho.Console.Transcription;
 
 /// <summary>
 /// Configuration for the OpenAI Realtime transcription service.

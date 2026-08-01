@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
 
-namespace Sancho.Console;
+namespace Sancho.Console.Logging;
 
 /// <summary>
 /// Extension methods on <see cref="ILogger"/> for inline (no-newline) output.

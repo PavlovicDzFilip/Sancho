@@ -2,7 +2,7 @@ using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using NAudio.Wave;
 
-namespace Sancho.Console;
+namespace Sancho.Console.Audio;
 
 /// <summary>
 /// Captures audio from a microphone device using NAudio and writes

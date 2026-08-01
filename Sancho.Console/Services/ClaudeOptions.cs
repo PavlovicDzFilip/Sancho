@@ -1,4 +1,4 @@
-namespace Sancho.Console;
+namespace Sancho.Console.Services;
 
 /// <summary>
 /// Configuration for the Claude CLI integration.

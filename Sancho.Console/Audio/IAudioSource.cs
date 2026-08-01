@@ -1,6 +1,6 @@
 using System.Threading.Channels;
 
-namespace Sancho.Console;
+namespace Sancho.Console.Audio;
 
 /// <summary>
 /// A source of audio that writes 16-bit PCM data to a channel.

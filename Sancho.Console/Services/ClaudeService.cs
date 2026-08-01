@@ -5,7 +5,7 @@ using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace Sancho.Console;
+namespace Sancho.Console.Services;
 
 public sealed class ClaudeService
 {

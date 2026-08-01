@@ -1,14 +1,12 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Sancho.Console;
 using Sancho.Console.Audio;
-using Sancho.Console.Logging;
 using Sancho.Console.Orchestration;
 using Sancho.Console.Services;
 using Sancho.Console.Transcription;
-
 // Display is in the root namespace
-using Sancho.Console;
 
 // ── Verify prerequisites ──────────────────────────────────────────
 ClaudeService.VerifyClaudeAvailable();
@@ -17,7 +15,6 @@ var builder = Host.CreateApplicationBuilder(args);
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.FormatterName = "raw");
-builder.Logging.AddConsoleFormatter<RawConsoleFormatter, Microsoft.Extensions.Logging.Console.SimpleConsoleFormatterOptions>();
 builder.Logging.SetMinimumLevel(LogLevel.Information);
 
 builder.Services.AddOptions<TranscriptionOptions>()

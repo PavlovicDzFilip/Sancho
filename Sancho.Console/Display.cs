@@ -9,7 +9,7 @@ namespace Sancho.Console;
 public sealed class Display : IDisposable
 {
     // ── Transcript geometry ───────────────────────────────────────
-    private int _transcriptRows = 1; // starts at 1 (separator only), grows as needed
+    private const int TranscriptRows = 5; // fixed: 1 separator + up to 4 content rows
     private readonly object _renderLock = new();
 
     // ── Value objects ─────────────────────────────────────────────
@@ -35,22 +35,21 @@ public sealed class Display : IDisposable
 
     public void Start()
     {
-        // Reserve bottom rows via ANSI scroll region
+        // Reserve bottom 5 rows via ANSI scroll region — scroll region
+        // ends 5 rows above the bottom so history never overlaps transcript.
         var total = System.Console.WindowHeight;
-        if (total > _transcriptRows)
-            System.Console.Write($"\e[1;{total - _transcriptRows}r");
+        if (total > TranscriptRows)
+            System.Console.Write($"\e[1;{total - TranscriptRows}r");
         System.Console.Clear();
     }
 
-    /// <summary>Update the transcript panel height, adjusting the ANSI scroll region.</summary>
-    internal void UpdateTranscriptRows(int rows)
+    /// <summary>Re-apply the scroll region (e.g. after terminal resize).</summary>
+    internal void RefreshScrollRegion()
     {
-        if (rows <= _transcriptRows) return; // only grow, never shrink
         var total = System.Console.WindowHeight;
-        if (total <= rows) return;
+        if (total <= TranscriptRows) return;
         System.Console.Write($"\e[r"); // reset first
-        System.Console.Write($"\e[1;{total - rows}r");
-        _transcriptRows = rows;
+        System.Console.Write($"\e[1;{total - TranscriptRows}r");
     }
 
     public void Dispose()
@@ -128,18 +127,17 @@ public sealed class Display : IDisposable
                 if (currentDelta is { Length: > 0 })
                     lines.AddRange(Wrap($"  ▶ {currentDelta}", width));
 
-                // Calculate needed rows dynamically — no cap, grows as needed
-                var neededRows = 1 + lines.Count; // 1 for separator
-                if (neededRows > total) neededRows = total; // don't exceed terminal height
+                // Fixed 5-row transcript: separator + up to 4 content rows
+                const int maxContentRows = TranscriptRows - 1; // 4
+                var contentRows = Math.Min(lines.Count, maxContentRows);
 
-                // Only grow, never shrink — avoids orphaned rows in the scroll region
-                _display.UpdateTranscriptRows(neededRows);
+                var startRow = Math.Max(0, total - TranscriptRows);
 
-                var allocatedRows = _display._transcriptRows;
-                var startRow = Math.Max(0, total - allocatedRows);
+                // Re-apply scroll region (handles terminal resize)
+                _display.RefreshScrollRegion();
 
-                // Clear the entire allocated transcript area
-                for (var i = 0; i < allocatedRows; i++)
+                // Clear the entire transcript area
+                for (var i = 0; i < TranscriptRows; i++)
                 {
                     System.Console.SetCursorPosition(0, startRow + i);
                     System.Console.Write(new string(' ', width));
@@ -149,12 +147,12 @@ public sealed class Display : IDisposable
                 System.Console.SetCursorPosition(0, startRow);
                 System.Console.Write(new string('─', width));
 
-                // Content (bottom-up)
-                var row = startRow + allocatedRows - 1;
-                for (var i = lines.Count - 1; i >= 0; i--, row--)
+                // Content (bottom-up) — only the most recent lines fit
+                var row = startRow + TranscriptRows - 1;
+                for (var i = contentRows - 1; i >= 0; i--, row--)
                 {
                     System.Console.SetCursorPosition(0, row);
-                    System.Console.Write(lines[i]);
+                    System.Console.Write(lines[lines.Count - contentRows + i]);
                 }
 
                 // Restore cursor

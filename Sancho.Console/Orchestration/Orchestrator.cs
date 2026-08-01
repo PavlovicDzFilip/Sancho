@@ -30,13 +30,19 @@ public sealed class Orchestrator(
         var claudeEvents = claudeService.RunAsync(cts.Token);
 
         display.History.AppendLine("🎤 Live transcription + Claude assistant started.");
-        display.History.AppendLine("   Speak naturally. Press any key to stop.");
+        display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
 
         var claudeTask = ConsumeClaudeEventsAsync(claudeEvents, cts.Token);
         var transcribeTask = RunTranscriptionLoopAsync(
             channel.Reader.ReadAllAsync(cts.Token), cts.Token);
 
-        System.Console.ReadKey(intercept: true);
+        ConsoleKeyInfo pressedKey;
+        bool shouldStop;
+        do
+        {
+            pressedKey = System.Console.ReadKey(intercept: true);
+            shouldStop = pressedKey.Key == ConsoleKey.C && (pressedKey.Modifiers & ConsoleModifiers.Control) > 0;
+        } while (!shouldStop);
 
         await cts.CancelAsync();
         await Task.WhenAll(captureTask, transcribeTask, claudeTask);
@@ -138,7 +144,12 @@ public sealed class Orchestrator(
 
     private void UpdateTranscript()
     {
-        display.Transcript.Set(_buffer, _currentDelta);
+        // Snapshot _buffer under lock to avoid collection-modified-during-enumeration
+        // when TryFlushBuffer clears the buffer concurrently from the Claude event loop.
+        string[] snapshot;
+        lock (_bufferLock)
+            snapshot = _buffer.ToArray();
+        display.Transcript.Set(snapshot, _currentDelta);
     }
 
     // ── Buffer flush ───────────────────────────────────────────────

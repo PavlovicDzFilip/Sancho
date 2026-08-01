@@ -24,10 +24,6 @@ public sealed class Display : IDisposable
         private HistoryColor(string ansi) => Ansi = ansi;
     }
 
-    public readonly record struct HistoryLine(
-        string Text,
-        HistoryColor? Color = null);
-
     public Display()
     {
         History = new HistoryPanel();
@@ -64,11 +60,11 @@ public sealed class Display : IDisposable
 
     // ── ANSI helpers ──────────────────────────────────────────────
 
-    internal static string FormatLine(HistoryLine line)
+    internal static string FormatLine(string text, HistoryColor? color = null)
     {
-        var color = line.Color ?? HistoryColor.Default;
-        var reset = color.Ansi.Length > 0 ? "\e[0m" : "";
-        return $"{color.Ansi}{line.Text}{reset}";
+        var c = color ?? HistoryColor.Default;
+        var reset = c.Ansi.Length > 0 ? "\e[0m" : "";
+        return $"{c.Ansi}{text}{reset}";
     }
 
     // ── Nested panels ────────────────────────────────────────────
@@ -83,16 +79,16 @@ public sealed class Display : IDisposable
         }
 
         /// <summary>Write a complete line to the console.</summary>
-        public void AppendLine(HistoryLine line)
+        public void AppendLine(string text, HistoryColor? color = null)
         {
             FinishLine();
-            System.Console.WriteLine(FormatLine(line));
+            System.Console.WriteLine(FormatLine(text, color));
         }
 
         /// <summary>Write streaming text to the current line. Overwrites with \r.</summary>
-        public void AppendInline(HistoryLine line)
+        public void AppendInline(string text, HistoryColor? color = null)
         {
-            var formatted = FormatLine(line);
+            var formatted = FormatLine(text, color);
             _currentLine.Clear();
             _currentLine.Append(formatted);
             System.Console.Write($"\r{formatted}\e[0K"); // clear to end of line

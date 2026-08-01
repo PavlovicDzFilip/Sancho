@@ -19,4 +19,10 @@
       <PackageReference Include="Spectre.Console" Version="0.57.2" />
     </ItemGroup>
 
+    <ItemGroup>
+      <None Update="prompt.md">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      </None>
+    </ItemGroup>
+
 </Project>

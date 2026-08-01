@@ -33,7 +33,18 @@ public sealed class ClaudeService
         _targetDirectory = string.IsNullOrWhiteSpace(o.TargetDirectory)
             ? Environment.CurrentDirectory
             : o.TargetDirectory;
-        _systemPrompt = o.SystemPrompt;
+
+        var promptPath = Path.IsPathRooted(o.PromptFilePath)
+            ? o.PromptFilePath
+            : Path.Combine(AppContext.BaseDirectory, o.PromptFilePath);
+
+        if (!File.Exists(promptPath))
+            throw new FileNotFoundException(
+                $"System prompt file not found at '{promptPath}'. " +
+                "Create a prompt.md file in the application directory, " +
+                "or set Claude:PromptFilePath in appsettings.json.");
+
+        _systemPrompt = File.ReadAllText(promptPath).Trim();
     }
 
     // ── Public API ─────────────────────────────────────────────────

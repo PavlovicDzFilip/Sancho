@@ -65,7 +65,7 @@ public sealed class Orchestrator(
 
                     case ClaudeEvent.TurnStart:
                         display.History.AppendLine(new Display.HistoryLine(
-                            "🤖", Display.HistoryColor.Claude));
+                            "🤖"));
                         break;
 
                     case ClaudeEvent.AssistantText(var text):
@@ -76,7 +76,7 @@ public sealed class Orchestrator(
                     case ClaudeEvent.ToolUse(var name, var preview):
                         display.History.FinishLine();
                         display.History.AppendLine(new Display.HistoryLine(
-                            $"🔧 {name}: {preview}", Display.HistoryColor.Dim));
+                            $"🔧 {name}: {preview}"));
                         break;
 
                     case ClaudeEvent.ToolResult(var toolId, var isError):
@@ -101,7 +101,9 @@ public sealed class Orchestrator(
                 }
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     // ── Transcription loop ─────────────────────────────────────────
@@ -128,6 +130,7 @@ public sealed class Orchestrator(
                         UpdateTranscript();
                         TryFlushBuffer();
                     }
+
                     break;
 
                 case TranscriptionEvent.Error error:
@@ -160,7 +163,7 @@ public sealed class Orchestrator(
             {
                 foreach (var line in combined.Split('\n'))
                     display.History.AppendLine(new Display.HistoryLine(
-                        $"👤 {line}", Display.HistoryColor.User));
+                        $"👤 {line}"));
 
                 display.Transcript.Clear();
                 claudeService.Send(combined);

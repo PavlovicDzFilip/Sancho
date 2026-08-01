@@ -25,11 +25,12 @@ public sealed class Display : IDisposable
     }
 
     public readonly record struct HistoryLine(
-        string Text, HistoryColor? Color = null);
+        string Text,
+        HistoryColor? Color = null);
 
     public Display()
     {
-        History = new HistoryPanel(this);
+        History = new HistoryPanel();
         Transcript = new TranscriptPanel(this);
     }
 
@@ -75,10 +76,11 @@ public sealed class Display : IDisposable
     /// <summary>Top panel — scrolls naturally.</summary>
     public sealed class HistoryPanel
     {
-        private readonly Display _display;
         private readonly StringBuilder _currentLine = new();
 
-        internal HistoryPanel(Display display) => _display = display;
+        internal HistoryPanel()
+        {
+        }
 
         /// <summary>Write a complete line to the console.</summary>
         public void AppendLine(HistoryLine line)
@@ -172,7 +174,12 @@ public sealed class Display : IDisposable
         private static List<string> Wrap(string text, int width)
         {
             var result = new List<string>();
-            if (width <= 0) { result.Add(text); return result; }
+            if (width <= 0)
+            {
+                result.Add(text);
+                return result;
+            }
+
             var remaining = text.AsSpan();
             while (remaining.Length > 0)
             {
@@ -180,6 +187,7 @@ public sealed class Display : IDisposable
                 result.Add(remaining[..take].ToString());
                 remaining = remaining[take..];
             }
+
             return result;
         }
     }

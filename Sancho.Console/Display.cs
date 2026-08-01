@@ -77,7 +77,8 @@ public sealed class Display : IDisposable
     {
         _lastHistoryText = markupText;
 
-        var header = "History";
+        var scrollHint = "  [grey dim](↑↓ scroll)[/]";
+        var header = "History" + scrollHint;
         var maxLines = Math.Max(5, System.Console.WindowHeight * 2 / 3 - 3);
         var allLines = markupText.Replace("\r", "").Split('\n');
 
@@ -103,7 +104,7 @@ public sealed class Display : IDisposable
             visible = string.Join("\n", allLines[start..(start + maxLines)]);
 
             if (_firstVisibleLine.HasValue)
-                header = $"History ↑{allLines.Length - maxLines - start}";
+                header = $"History ↑{allLines.Length - maxLines - start}" + scrollHint;
         }
 
         var content = string.IsNullOrEmpty(visible)
@@ -188,17 +189,8 @@ public sealed class Display : IDisposable
 
         internal HistoryPanel(Display display) => _display = display;
 
-        /// <summary>Append a complete line to the history (escaped — safe for plain text).</summary>
-        public void AppendLine(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text))
-                return;
-            _lines.AppendLine(Markup.Escape(text));
-            _display.RefreshHistory(_lines.ToString());
-        }
-
-        /// <summary>Append a pre-formatted markup line. Caller must balance tags.</summary>
-        public void AppendMarkup(string markup)
+        /// <summary>Append a complete line of Spectre markup. Caller must escape user text with <c>Markup.Escape</c>.</summary>
+        public void AppendLine(string markup)
         {
             if (string.IsNullOrWhiteSpace(markup))
                 return;
@@ -206,17 +198,8 @@ public sealed class Display : IDisposable
             _display.RefreshHistory(_lines.ToString());
         }
 
-        /// <summary>Append text to the current line (escaped).</summary>
-        public void AppendInline(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text))
-                return;
-            _lines.Append(Markup.Escape(text));
-            _display.RefreshHistory(_lines.ToString());
-        }
-
-        /// <summary>Append markup to the current line. Caller must balance tags.</summary>
-        public void AppendInlineMarkup(string markup)
+        /// <summary>Append Spectre markup to the current line. Caller must escape user text with <c>Markup.Escape</c>.</summary>
+        public void AppendInline(string markup)
         {
             if (string.IsNullOrWhiteSpace(markup))
                 return;
@@ -256,10 +239,10 @@ public sealed class Display : IDisposable
             var sb = new StringBuilder();
 
             foreach (var line in queued)
-                sb.Append("[dim]⏳ ").Append(Markup.Escape(line)).AppendLine("[/]");
+                sb.Append("[#87CEEB]⏳ ").Append(Markup.Escape(line)).AppendLine("[/]");
 
             if (currentDelta is { Length: > 0 })
-                sb.Append("▶ ").Append(Markup.Escape(currentDelta));
+                sb.Append("[bold]▶ ").Append(Markup.Escape(currentDelta)).Append("[/]");
 
             _display.RefreshTranscript(sb.ToString());
         }

@@ -70,15 +70,14 @@ public sealed class Orchestrator(
                         break;
 
                     case ClaudeEvent.TurnStart:
-                        display.History.AppendLine("[#FF8C00]🤖 ");
+                        display.History.AppendLine($"[#FF8C00]🤖 [/]");
                         break;
 
                     case ClaudeEvent.AssistantText(var text):
-                        display.History.AppendInline(Markup.Escape(text));
+                        display.History.AppendInline($"[#FF8C00]{Markup.Escape(text)}[/]");
                         break;
 
                     case ClaudeEvent.ToolUse(var name, var preview):
-                        display.History.AppendInline("[/]");
                         display.History.FinishLine();
                         display.History.AppendLine(
                             $"[dim]  🔧 {Markup.Escape(name)}: {Markup.Escape(preview)}[/]");
@@ -86,11 +85,10 @@ public sealed class Orchestrator(
 
                     case ClaudeEvent.ToolResult(var toolId, var isError):
                         display.History.AppendLine(
-                            $"[dim]  [tool {toolId}… {(isError ? "✗" : "✓")}][/]");
+                            $"[dim]  [[tool {toolId}… {(isError ? "✗" : "✓")}]][/]");
                         break;
 
                     case ClaudeEvent.TurnComplete:
-                        display.History.AppendInline("[/]");
                         display.History.FinishLine();
                         break;
 

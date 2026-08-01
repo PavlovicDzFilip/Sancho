@@ -7,6 +7,9 @@ using Sancho.Console.Orchestration;
 using Sancho.Console.Services;
 using Sancho.Console.Transcription;
 
+// Display is in the root namespace
+using Sancho.Console;
+
 // ── Verify prerequisites ──────────────────────────────────────────
 ClaudeService.VerifyClaudeAvailable();
 
@@ -26,9 +29,8 @@ builder.Services.AddOptions<TranscriptionOptions>()
 builder.Services.AddOptions<ClaudeOptions>()
     .Bind(builder.Configuration.GetSection("Claude"));
 
+builder.Services.AddSingleton<Display>();
 builder.Services.AddSingleton<MicrophoneAudioSourceFactory>();
-builder.Services.AddSingleton<IAudioSource>(sp =>
-    sp.GetRequiredService<MicrophoneAudioSourceFactory>().Create());
 builder.Services.AddSingleton<RealtimeTranscriptionService>();
 builder.Services.AddSingleton<ClaudeService>();
 builder.Services.AddSingleton<Orchestrator>();

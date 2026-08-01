@@ -8,13 +8,21 @@ using Sancho.Console.Transcription;
 namespace Sancho.Console.Orchestration;
 
 public sealed class Orchestrator(
-    IAudioSource audioSource,
+    MicrophoneAudioSourceFactory audioSourceFactory,
     RealtimeTranscriptionService transcriptionService,
     ClaudeService claudeService,
+    Display display,
     ILogger<Orchestrator> logger)
 {
     public async Task RunAsync(CancellationToken ct)
     {
+        // 1. Select microphone (interactive prompt on clean console)
+        var audioSource = audioSourceFactory.Create();
+
+        // 2. Start the live display
+        display.Start();
+
+        // 3. Begin capture — writes "Using device" to history
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var channel = Channel.CreateUnbounded<byte[]>();
 

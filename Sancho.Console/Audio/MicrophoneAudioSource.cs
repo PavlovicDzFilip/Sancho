@@ -11,14 +11,19 @@ namespace Sancho.Console.Audio;
 public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
 {
     private readonly int _deviceNumber;
+    private readonly string _deviceName;
     private const int SampleRate = 24000;
     private readonly ILogger<MicrophoneAudioSource> _logger;
+    private readonly Display _display;
     private WaveInEvent? _waveIn;
 
-    public MicrophoneAudioSource(int deviceNumber, ILogger<MicrophoneAudioSource> logger)
+    public MicrophoneAudioSource(int deviceNumber, string deviceName,
+        ILogger<MicrophoneAudioSource> logger, Display display)
     {
         _deviceNumber = deviceNumber;
+        _deviceName = deviceName;
         _logger = logger;
+        _display = display;
     }
 
     /// <inheritdoc />
@@ -38,6 +43,8 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
 
         _logger.LogDebug("Starting capture: {SampleRate} Hz, {Bits}-bit, {Channels} ch, buffer {BufferMs} ms",
             format.SampleRate, format.BitsPerSample, format.Channels, _waveIn.BufferMilliseconds);
+
+        _display.History.Append($"🎤 Using device [{_deviceNumber}]: {_deviceName}");
 
         // NAudio fires DataAvailable on a background thread. The buffer
         // is reused between callbacks, so we copy before writing.

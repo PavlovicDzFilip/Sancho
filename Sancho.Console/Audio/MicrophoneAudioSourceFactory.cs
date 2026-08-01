@@ -10,7 +10,7 @@ namespace Sancho.Console.Audio;
 /// </summary>
 public sealed class MicrophoneAudioSourceFactory(
     ILoggerFactory loggerFactory,
-    ILogger<MicrophoneAudioSourceFactory> logger)
+    Display display)
 {
     public MicrophoneAudioSource Create()
     {
@@ -42,9 +42,9 @@ public sealed class MicrophoneAudioSourceFactory(
         }
 
         var deviceName = WaveInEvent.GetCapabilities(selected).ProductName;
-        logger.LogInformation("Using device [{Index}]: {Name}", selected, deviceName);
 
-        return new MicrophoneAudioSource(selected,
-            loggerFactory.CreateLogger<MicrophoneAudioSource>());
+        return new MicrophoneAudioSource(selected, deviceName,
+            loggerFactory.CreateLogger<MicrophoneAudioSource>(),
+            display);
     }
 }

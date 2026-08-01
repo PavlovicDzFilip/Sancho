@@ -163,7 +163,7 @@ public sealed class Orchestrator(
             {
                 foreach (var line in combined.Split('\n'))
                     display.History.AppendLine(new Display.HistoryLine(
-                        $"👤 {line}"));
+                        $"💬 {line}"));
 
                 display.Transcript.Clear();
                 claudeService.Send(combined);

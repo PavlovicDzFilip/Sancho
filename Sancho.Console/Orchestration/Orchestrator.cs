@@ -3,7 +3,6 @@ using Microsoft.Extensions.Logging;
 using Sancho.Console.Audio;
 using Sancho.Console.Services;
 using Sancho.Console.Transcription;
-using Spectre.Console;
 
 namespace Sancho.Console.Orchestration;
 
@@ -21,8 +20,8 @@ public sealed class Orchestrator(
 
     public async Task RunAsync(CancellationToken ct)
     {
-        var audioSource = audioSourceFactory.Create();
         display.Start();
+        var audioSource = audioSourceFactory.Create();
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var channel = Channel.CreateUnbounded<byte[]>();
@@ -30,26 +29,21 @@ public sealed class Orchestrator(
         var captureTask = audioSource.CaptureAsync(channel.Writer, cts.Token);
         var claudeEvents = claudeService.RunAsync(cts.Token);
 
-        display.History.AppendLine(Markup.Escape("🎤 Live transcription + Claude assistant started."));
-        display.History.AppendLine(Markup.Escape("   Speak naturally. Press any key to stop."));
+        display.History.AppendLine(new Display.HistoryLine(
+            "🎤 Live transcription + Claude assistant started."));
+        display.History.AppendLine(new Display.HistoryLine(
+            "   Speak naturally. Press any key to stop."));
 
         var claudeTask = ConsumeClaudeEventsAsync(claudeEvents, cts.Token);
         var transcribeTask = RunTranscriptionLoopAsync(
             channel.Reader.ReadAllAsync(cts.Token), cts.Token);
 
-        // Escape to stop, arrow keys scroll the history panel
-        while (true)
-        {
-            var key = System.Console.ReadKey(intercept: true);
-            if (!display.HandleScrollKey(key))
-                break;
-        }
-        display.History.AppendLine(Markup.Escape("Stopping..."));
+        System.Console.ReadKey(intercept: true);
 
         await cts.CancelAsync();
         await Task.WhenAll(captureTask, transcribeTask, claudeTask);
 
-        display.History.AppendLine(Markup.Escape("✅ Done."));
+        display.History.AppendLine(new Display.HistoryLine("✅ Done."));
     }
 
     // ── Claude event consumer ──────────────────────────────────────
@@ -70,22 +64,25 @@ public sealed class Orchestrator(
                         break;
 
                     case ClaudeEvent.TurnStart:
-                        display.History.AppendLine($"[#FF8C00]🤖 [/]");
+                        display.History.AppendLine(new Display.HistoryLine(
+                            "🤖", Display.HistoryColor.Claude));
                         break;
 
                     case ClaudeEvent.AssistantText(var text):
-                        display.History.AppendInline($"[#FF8C00]{Markup.Escape(text)}[/]");
+                        display.History.AppendInline(new Display.HistoryLine(
+                            text, Color: Display.HistoryColor.Claude));
                         break;
 
                     case ClaudeEvent.ToolUse(var name, var preview):
                         display.History.FinishLine();
-                        display.History.AppendLine(
-                            $"[dim]  🔧 {Markup.Escape(name)}: {Markup.Escape(preview)}[/]");
+                        display.History.AppendLine(new Display.HistoryLine(
+                            $"🔧 {name}: {preview}", Display.HistoryColor.Dim));
                         break;
 
                     case ClaudeEvent.ToolResult(var toolId, var isError):
-                        display.History.AppendLine(
-                            $"[dim]  [[tool {toolId}… {(isError ? "✗" : "✓")}]][/]");
+                        display.History.AppendLine(new Display.HistoryLine(
+                            $"tool {toolId}… {(isError ? "✗" : "✓")}",
+                            Color: Display.HistoryColor.Dim));
                         break;
 
                     case ClaudeEvent.TurnComplete:
@@ -93,19 +90,18 @@ public sealed class Orchestrator(
                         break;
 
                     case ClaudeEvent.Status(var msg, _):
-                        display.History.AppendLine(Markup.Escape(msg));
+                        display.History.AppendLine(new Display.HistoryLine(msg));
                         break;
 
                     case ClaudeEvent.Error(var msg):
                         logger.LogError("Claude error: {Msg}", msg);
-                        display.History.AppendLine(Markup.Escape($"⚠ {msg}"));
+                        display.History.AppendLine(new Display.HistoryLine(
+                            $"⚠ {msg}"));
                         break;
                 }
             }
         }
-        catch (OperationCanceledException)
-        {
-        }
+        catch (OperationCanceledException) { }
     }
 
     // ── Transcription loop ─────────────────────────────────────────
@@ -132,7 +128,6 @@ public sealed class Orchestrator(
                         UpdateTranscript();
                         TryFlushBuffer();
                     }
-
                     break;
 
                 case TranscriptionEvent.Error error:
@@ -164,7 +159,8 @@ public sealed class Orchestrator(
             if (!string.IsNullOrEmpty(combined))
             {
                 foreach (var line in combined.Split('\n'))
-                    display.History.AppendLine($"[bold]👤 {Markup.Escape(line)}[/]");
+                    display.History.AppendLine(new Display.HistoryLine(
+                        $"👤 {line}", Display.HistoryColor.User));
 
                 display.Transcript.Clear();
                 claudeService.Send(combined);

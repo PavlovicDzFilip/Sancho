@@ -1,41 +1,34 @@
 using System.Text;
-using Spectre.Console;
-using Spectre.Console.Rendering;
 
 namespace Sancho.Console;
 
 /// <summary>
-/// Two-panel live display: History (top) for the conversation log,
-/// Transcript (bottom) for buffered sentences awaiting Claude.
+/// Two-panel display: History scrolls naturally in the console,
+/// Transcript is pinned at the bottom via ANSI scroll region.
 /// </summary>
 public sealed class Display : IDisposable
 {
-    private readonly Layout _layout;
-    private readonly Layout _historyLayout;
-    private readonly Layout _transcriptLayout;
+    // ── Transcript geometry ───────────────────────────────────────
+    private int _transcriptRows = 1; // starts at 1 (separator only), grows as needed
+    private readonly object _renderLock = new();
 
-    private LiveDisplayContext? _ctx;
-    private LiveDisplay? _live;
-    private readonly ManualResetEventSlim _stopped = new();
+    // ── Value objects ─────────────────────────────────────────────
 
-    // ── Scroll state ──────────────────────────────────────────────
-    private string _lastHistoryText = "";
-    private int? _firstVisibleLine; // null = auto-scroll to tail
+    public sealed class HistoryColor
+    {
+        public static readonly HistoryColor Default = new("");
+        public static readonly HistoryColor User = new("\e[1m");
+        public static readonly HistoryColor Claude = new("\e[38;5;214m");
+        public static readonly HistoryColor Dim = new("\e[38;5;240m");
+        public string Ansi { get; }
+        private HistoryColor(string ansi) => Ansi = ansi;
+    }
+
+    public readonly record struct HistoryLine(
+        string Text, HistoryColor? Color = null);
 
     public Display()
     {
-        _historyLayout = new Layout("History");
-        _transcriptLayout = new Layout("Transcript");
-
-        _historyLayout.Update(Panel("History", ""));
-        _transcriptLayout.Update(Panel("Transcript", ""));
-
-        _layout = new Layout("Root")
-            .SplitRows(_historyLayout, _transcriptLayout);
-
-        _historyLayout.Ratio(2);
-        _transcriptLayout.MinimumSize(3);
-
         History = new HistoryPanel(this);
         Transcript = new TranscriptPanel(this);
     }
@@ -45,212 +38,149 @@ public sealed class Display : IDisposable
 
     public void Start()
     {
-        _live = AnsiConsole.Live(_layout);
-        Task.Run(() => _live.Start(ctx =>
-        {
-            _ctx = ctx;
-            ctx.Refresh();
-            _stopped.Wait();
-        }));
+        // Reserve bottom rows via ANSI scroll region
+        var total = System.Console.WindowHeight;
+        if (total > _transcriptRows)
+            System.Console.Write($"\e[1;{total - _transcriptRows}r");
+        System.Console.Clear();
+    }
+
+    /// <summary>Update the transcript panel height, adjusting the ANSI scroll region.</summary>
+    internal void UpdateTranscriptRows(int rows)
+    {
+        if (rows <= _transcriptRows) return; // only grow, never shrink
+        var total = System.Console.WindowHeight;
+        if (total <= rows) return;
+        System.Console.Write($"\e[r"); // reset first
+        System.Console.Write($"\e[1;{total - rows}r");
+        _transcriptRows = rows;
     }
 
     public void Dispose()
     {
-        _stopped.Set();
-
-        // Give the LiveDisplay a moment to stop and restore the terminal.
-        // Dispose is called after all tasks complete, so a brief spin is safe.
-        for (var i = 0; i < 10 && _ctx is not null; i++)
-            Thread.Sleep(50);
-
-        _stopped.Dispose();
-
-        // Dump full history to the terminal so it lands in native scrollback.
-        var full = History.GetFullText();
-        if (!string.IsNullOrWhiteSpace(full))
-            AnsiConsole.Write(new Markup(full + "\n"));
+        System.Console.Write("\e[r"); // reset scroll region
     }
 
-    // ── Internal refresh ───────────────────────────────────────────
+    // ── ANSI helpers ──────────────────────────────────────────────
 
-    internal void RefreshHistory(string markupText)
+    internal static string FormatLine(HistoryLine line)
     {
-        _lastHistoryText = markupText;
-
-        var scrollHint = "  [grey dim](↑↓ scroll)[/]";
-        var header = "History" + scrollHint;
-        var maxLines = Math.Max(5, System.Console.WindowHeight * 2 / 3 - 3);
-        var allLines = markupText.Replace("\r", "").Split('\n');
-
-        string visible;
-        if (allLines.Length <= maxLines)
-        {
-            visible = markupText;
-        }
-        else
-        {
-            var tailStart = allLines.Length - maxLines;
-            var start = _firstVisibleLine.HasValue
-                ? Math.Clamp(_firstVisibleLine.Value, 0, allLines.Length - maxLines)
-                : tailStart;
-
-            // If scrolled and caught up to the tail, snap back to auto
-            if (_firstVisibleLine.HasValue && start >= tailStart)
-            {
-                _firstVisibleLine = null;
-                start = tailStart;
-            }
-
-            visible = string.Join("\n", allLines[start..(start + maxLines)]);
-
-            if (_firstVisibleLine.HasValue)
-                header = $"History ↑{allLines.Length - maxLines - start}" + scrollHint;
-        }
-
-        var content = string.IsNullOrEmpty(visible)
-            ? (IRenderable)new Text("")
-            : new Markup(visible);
-        _historyLayout.Update(new Panel(content).Header(header).Expand());
-        _ctx?.Refresh();
+        var color = line.Color ?? HistoryColor.Default;
+        var reset = color.Ansi.Length > 0 ? "\e[0m" : "";
+        return $"{color.Ansi}{line.Text}{reset}";
     }
 
-    private void RerenderHistory()
-    {
-        if (_lastHistoryText.Length > 0)
-            RefreshHistory(_lastHistoryText);
-    }
+    // ── Nested panels ────────────────────────────────────────────
 
-    internal void RefreshTranscript(string markupText)
-    {
-        var lineCount = Math.Max(1, markupText.Count(c => c == '\n') + 1);
-        _transcriptLayout.MinimumSize(Math.Max(3, lineCount + 2));
-        var content = string.IsNullOrEmpty(markupText)
-            ? (IRenderable)new Text("")
-            : new Markup(markupText);
-        _transcriptLayout.Update(new Panel(content)
-            .Header("Transcript")
-            .Expand());
-        _ctx?.Refresh();
-    }
-
-    private static Panel Panel(string header, string text)
-    {
-        return new Panel(string.IsNullOrEmpty(text) ? "" : Markup.Escape(text))
-            .Header(header)
-            .Expand();
-    }
-
-    // ── Scroll keys ───────────────────────────────────────────────
-
-    /// <summary>Handle a scroll key. Returns true if the key was handled.</summary>
-    public bool HandleScrollKey(ConsoleKeyInfo key)
-    {
-        var maxLines = Math.Max(5, System.Console.WindowHeight * 2 / 3 - 3);
-        var allLines = _lastHistoryText.Replace("\r", "").Split('\n');
-        var tailStart = Math.Max(0, allLines.Length - maxLines);
-
-        switch (key.Key)
-        {
-            case ConsoleKey.UpArrow:
-            case ConsoleKey.PageUp:
-            {
-                var cur = _firstVisibleLine ?? tailStart;
-                _firstVisibleLine = Math.Max(0, cur - 1);
-                RerenderHistory();
-                return true;
-            }
-            case ConsoleKey.DownArrow:
-            case ConsoleKey.PageDown:
-            {
-                var cur = _firstVisibleLine ?? tailStart;
-                if (cur + 1 >= tailStart)
-                    _firstVisibleLine = null;
-                else
-                    _firstVisibleLine = cur + 1;
-                RerenderHistory();
-                return true;
-            }
-            case ConsoleKey.End:
-                _firstVisibleLine = null;
-                RerenderHistory();
-                return true;
-        }
-
-        return false;
-    }
-
-    // ── Nested panels ──────────────────────────────────────────────
-
-    /// <summary>Top panel — full conversation log.</summary>
+    /// <summary>Top panel — scrolls naturally.</summary>
     public sealed class HistoryPanel
     {
         private readonly Display _display;
-        private readonly StringBuilder _lines = new();
+        private readonly StringBuilder _currentLine = new();
 
         internal HistoryPanel(Display display) => _display = display;
 
-        /// <summary>Append a complete line of Spectre markup. Caller must escape user text with <c>Markup.Escape</c>.</summary>
-        public void AppendLine(string markup)
+        /// <summary>Write a complete line to the console.</summary>
+        public void AppendLine(HistoryLine line)
         {
-            if (string.IsNullOrWhiteSpace(markup))
-                return;
-            _lines.AppendLine(markup);
-            _display.RefreshHistory(_lines.ToString());
+            FinishLine();
+            System.Console.WriteLine(FormatLine(line));
         }
 
-        /// <summary>Append Spectre markup to the current line. Caller must escape user text with <c>Markup.Escape</c>.</summary>
-        public void AppendInline(string markup)
+        /// <summary>Write streaming text to the current line. Overwrites with \r.</summary>
+        public void AppendInline(HistoryLine line)
         {
-            if (string.IsNullOrWhiteSpace(markup))
-                return;
-            _lines.Append(markup);
-            _display.RefreshHistory(_lines.ToString());
+            var formatted = FormatLine(line);
+            _currentLine.Clear();
+            _currentLine.Append(formatted);
+            System.Console.Write($"\r{formatted}\e[0K"); // clear to end of line
         }
 
-        /// <summary>End the current line with a newline if needed.</summary>
+        /// <summary>End the current inline line and move to the next.</summary>
         public void FinishLine()
         {
-            if (_lines.Length > 0 && _lines[^1] != '\n')
+            if (_currentLine.Length > 0)
             {
-                _lines.AppendLine();
-                _display.RefreshHistory(_lines.ToString());
+                System.Console.Write("\r\e[0K"); // clear the inline line
+                System.Console.WriteLine();
+                _currentLine.Clear();
             }
         }
-
-        /// <summary>Return the full, untruncated history.</summary>
-        internal string GetFullText() => _lines.ToString();
     }
 
-    /// <summary>Bottom panel — queued sentences awaiting Claude.</summary>
+    /// <summary>Bottom panel — pinned transcript.</summary>
     public sealed class TranscriptPanel
     {
         private readonly Display _display;
 
         internal TranscriptPanel(Display display) => _display = display;
 
-        /// <summary>
-        /// Replace the transcript content.
-        /// <paramref name="queued"/> are completed sentences waiting to be sent
-        /// (shown dimmed with a clock). <paramref name="currentDelta"/> is the
-        /// live in-progress transcription (shown bright with a play marker).
-        /// </summary>
         public void Set(IReadOnlyList<string> queued, string? currentDelta)
         {
-            var sb = new StringBuilder();
+            lock (_display._renderLock)
+            {
+                var (left, top) = System.Console.GetCursorPosition();
+                var total = System.Console.WindowHeight;
+                var width = System.Console.WindowWidth;
 
-            foreach (var line in queued)
-                sb.Append("[#87CEEB]⏳ ").Append(Markup.Escape(line)).AppendLine("[/]");
+                // Build wrapped content lines
+                var lines = new List<string>();
+                foreach (var q in queued)
+                    lines.AddRange(Wrap($"  ⏳ {q}", width));
+                if (currentDelta is { Length: > 0 })
+                    lines.AddRange(Wrap($"  ▶ {currentDelta}", width));
 
-            if (currentDelta is { Length: > 0 })
-                sb.Append("[bold]▶ ").Append(Markup.Escape(currentDelta)).Append("[/]");
+                // Calculate needed rows dynamically — no cap, grows as needed
+                var neededRows = 1 + lines.Count; // 1 for separator
+                if (neededRows > total) neededRows = total; // don't exceed terminal height
 
-            _display.RefreshTranscript(sb.ToString());
+                // Only grow, never shrink — avoids orphaned rows in the scroll region
+                _display.UpdateTranscriptRows(neededRows);
+
+                var allocatedRows = _display._transcriptRows;
+                var startRow = Math.Max(0, total - allocatedRows);
+
+                // Clear the entire allocated transcript area
+                for (var i = 0; i < allocatedRows; i++)
+                {
+                    System.Console.SetCursorPosition(0, startRow + i);
+                    System.Console.Write(new string(' ', width));
+                }
+
+                // Separator
+                System.Console.SetCursorPosition(0, startRow);
+                System.Console.Write(new string('─', width));
+
+                // Content (bottom-up)
+                var row = startRow + allocatedRows - 1;
+                for (var i = lines.Count - 1; i >= 0; i--, row--)
+                {
+                    System.Console.SetCursorPosition(0, row);
+                    System.Console.Write(lines[i]);
+                }
+
+                // Restore cursor
+                System.Console.SetCursorPosition(left, top);
+            }
         }
 
-        /// <summary>Clear the transcript panel.</summary>
         public void Clear()
         {
-            _display.RefreshTranscript("");
+            Set(Array.Empty<string>(), null);
+        }
+
+        private static List<string> Wrap(string text, int width)
+        {
+            var result = new List<string>();
+            if (width <= 0) { result.Add(text); return result; }
+            var remaining = text.AsSpan();
+            while (remaining.Length > 0)
+            {
+                var take = Math.Min(remaining.Length, width);
+                result.Add(remaining[..take].ToString());
+                remaining = remaining[take..];
+            }
+            return result;
         }
     }
 }

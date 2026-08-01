@@ -1,7 +1,6 @@
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using NAudio.Wave;
-using Spectre.Console;
 
 namespace Sancho.Console.Audio;
 
@@ -45,7 +44,8 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
         _logger.LogDebug("Starting capture: {SampleRate} Hz, {Bits}-bit, {Channels} ch, buffer {BufferMs} ms",
             format.SampleRate, format.BitsPerSample, format.Channels, _waveIn.BufferMilliseconds);
 
-        _display.History.AppendLine(Markup.Escape($"🎤 Using device [{_deviceNumber}]: {_deviceName}"));
+        _display.History.AppendLine(new Display.HistoryLine(
+            $"🎤 Using device [{_deviceNumber}]: {_deviceName}"));
 
         // NAudio fires DataAvailable on a background thread. The buffer
         // is reused between callbacks, so we copy before writing.

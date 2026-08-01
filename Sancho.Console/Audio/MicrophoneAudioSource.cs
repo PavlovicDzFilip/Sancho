@@ -44,7 +44,7 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
         _logger.LogDebug("Starting capture: {SampleRate} Hz, {Bits}-bit, {Channels} ch, buffer {BufferMs} ms",
             format.SampleRate, format.BitsPerSample, format.Channels, _waveIn.BufferMilliseconds);
 
-        _display.History.AppendLine($"🎤 Using device [{_deviceNumber}]: {_deviceName}");
+        _display.History.AppendLine($"🎤 Using device [{_deviceNumber}]: {_deviceName}", Display.HistoryColor.Default);
 
         // NAudio fires DataAvailable on a background thread. The buffer
         // is reused between callbacks, so we copy before writing.

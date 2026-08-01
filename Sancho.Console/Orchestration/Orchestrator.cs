@@ -71,15 +71,14 @@ public sealed class Orchestrator(
                         break;
 
                     case ClaudeEvent.TurnStart:
-                        display.History.AppendLine("🤖");
+                        display.History.AppendLine("🤖", Display.HistoryColor.Claude);
                         break;
 
                     case ClaudeEvent.AssistantText(var text):
-                        display.History.AppendInline(text, color: Display.HistoryColor.Claude);
+                        display.History.AppendLine(text, color: Display.HistoryColor.Claude);
                         break;
 
                     case ClaudeEvent.ToolUse(var name, var preview):
-                        display.History.FinishLine();
                         display.History.AppendLine($"🔧 {name}: {preview}", Display.HistoryColor.Dim);
                         break;
 
@@ -90,15 +89,16 @@ public sealed class Orchestrator(
                         break;
 
                     case ClaudeEvent.TurnComplete:
-                        display.History.FinishLine();
                         break;
 
                     case ClaudeEvent.Status(var msg, _):
+                        System.Console.WriteLine(msg);
                         display.History.AppendLine(msg);
                         break;
 
                     case ClaudeEvent.Error(var msg):
                         logger.LogError("Claude error: {Msg}", msg);
+                        System.Console.WriteLine(msg);
                         display.History.AppendLine($"⚠ {msg}");
                         break;
                 }
@@ -165,11 +165,11 @@ public sealed class Orchestrator(
             if (!_claudeIsReady)
                 return;
 
-            combined = string.Join("\n", _buffer);
+            combined = string.Join(Environment.NewLine, _buffer);
             _buffer.Clear();
             if (!string.IsNullOrEmpty(combined))
             {
-                foreach (var line in combined.Split('\n'))
+                foreach (var line in combined.Split(Environment.NewLine))
                     display.History.AppendLine($"💬 {line}");
 
                 display.Transcript.Clear();

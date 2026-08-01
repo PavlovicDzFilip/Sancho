@@ -77,12 +77,16 @@ public sealed class ClaudeService
                 throw new InvalidOperationException(
                     $"`claude --version` exited with code {proc.ExitCode}.");
         }
-        catch (InvalidOperationException) { throw; }
+        catch (InvalidOperationException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             throw new InvalidOperationException(
                 "Could not find `claude` CLI. " +
-                "Make sure it is installed and on your PATH.\n" +
+                "Make sure it is installed and on your PATH. " +
+                Environment.NewLine +
                 $"Error: {ex.Message}");
         }
     }
@@ -96,7 +100,8 @@ public sealed class ClaudeService
     {
         // ── Spawn process ────────────────────────────────────────
         var escapedPrompt = _systemPrompt.Replace("\"", "\\\"");
-        var args = $"--print --verbose --input-format stream-json --output-format stream-json --permission-mode bypassPermissions --system-prompt \"{escapedPrompt}\"";
+        var args =
+            $"--print --verbose --input-format stream-json --output-format stream-json --permission-mode bypassPermissions --system-prompt \"{escapedPrompt}\"";
 
         var psi = new ProcessStartInfo("claude", args)
         {
@@ -109,7 +114,7 @@ public sealed class ClaudeService
         };
 
         _process = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start claude process.");
+                   ?? throw new InvalidOperationException("Failed to start claude process.");
 
         _stdin = new StreamWriter(_process.StandardInput.BaseStream, Encoding.UTF8)
         {
@@ -122,7 +127,8 @@ public sealed class ClaudeService
         {
             var errText = await _process.StandardError.ReadToEndAsync(ct);
             throw new InvalidOperationException(
-                $"claude process exited immediately with code {_process.ExitCode}.\n" +
+                $"claude process exited immediately with code {_process.ExitCode}." +
+                Environment.NewLine +
                 $"stderr: {errText.Trim()}");
         }
 
@@ -156,7 +162,7 @@ public sealed class ClaudeService
             await Task.WhenAny(
                 Task.WhenAll(stdoutTask, stderrTask, watchdogTask, inputTask),
                 Task.Delay(3_000, ct));
-            
+
             if (!_process.HasExited)
                 _process.Kill(entireProcessTree: true);
         }
@@ -202,7 +208,9 @@ public sealed class ClaudeService
                 writer.TryWrite(ClaudeEvent.Ready.Instance);
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+        }
         catch (IOException ex)
         {
             writer.TryWrite(new ClaudeEvent.Error(
@@ -235,9 +243,15 @@ public sealed class ClaudeService
                 }
             }
         }
-        catch (OperationCanceledException) { }
-        catch (ObjectDisposedException) { }
-        catch (IOException) { }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (IOException)
+        {
+        }
     }
 
     // ── Stderr reader ──────────────────────────────────────────────
@@ -255,8 +269,12 @@ public sealed class ClaudeService
                     writer.TryWrite(new ClaudeEvent.Status(line, ClaudeStatusKind.Stderr));
             }
         }
-        catch (OperationCanceledException) { }
-        catch (IOException) { }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (IOException)
+        {
+        }
     }
 
     // ── Process watchdog ───────────────────────────────────────────
@@ -271,7 +289,9 @@ public sealed class ClaudeService
                 $"Claude process exited unexpectedly (code {process.ExitCode})"));
             _turnComplete?.TrySetResult();
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     // ── Stream-json message dispatcher ─────────────────────────────
@@ -350,7 +370,8 @@ public sealed class ClaudeService
                 continue;
 
             var toolId = block.TryGetProperty("tool_use_id", out var tid)
-                ? tid.GetString()?[..Math.Min(12, tid.GetString()!.Length)] : "?";
+                ? tid.GetString()?[..Math.Min(12, tid.GetString()!.Length)]
+                : "?";
             var isError = block.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
             writer.TryWrite(new ClaudeEvent.ToolResult(toolId!, isError));
         }

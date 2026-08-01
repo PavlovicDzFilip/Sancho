@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace Sancho.Console;
 
 /// <summary>
@@ -16,8 +14,7 @@ public sealed class Display : IDisposable
 
     public sealed class HistoryColor
     {
-        public static readonly HistoryColor Default = new("");
-        public static readonly HistoryColor User = new("\e[1m");
+        public static readonly HistoryColor Default = new("\e[0m");
         public static readonly HistoryColor Claude = new("\e[38;5;214m");
         public static readonly HistoryColor Dim = new("\e[38;5;240m");
         public string Ansi { get; }
@@ -26,7 +23,7 @@ public sealed class Display : IDisposable
 
     public Display()
     {
-        History = new HistoryPanel();
+        History = new HistoryPanel(this);
         Transcript = new TranscriptPanel(this);
     }
 
@@ -59,11 +56,9 @@ public sealed class Display : IDisposable
 
     // ── ANSI helpers ──────────────────────────────────────────────
 
-    internal static string FormatLine(string text, HistoryColor? color = null)
+    internal static string FormatLine(string text, HistoryColor color)
     {
-        var c = color ?? HistoryColor.Default;
-        var reset = c.Ansi.Length > 0 ? "\e[0m" : "";
-        return $"{c.Ansi}{text}{reset}";
+        return $"{color.Ansi}{text}{HistoryColor.Default.Ansi}";
     }
 
     // ── Nested panels ────────────────────────────────────────────
@@ -71,36 +66,17 @@ public sealed class Display : IDisposable
     /// <summary>Top panel — scrolls naturally.</summary>
     public sealed class HistoryPanel
     {
-        private readonly StringBuilder _currentLine = new();
+        private readonly Display _display;
 
-        internal HistoryPanel()
-        {
-        }
+        internal HistoryPanel(Display display) => _display = display;
 
         /// <summary>Write a complete line to the console.</summary>
         public void AppendLine(string text, HistoryColor? color = null)
         {
-            FinishLine();
-            System.Console.WriteLine(FormatLine(text, color));
-        }
-
-        /// <summary>Write streaming text to the current line. Overwrites with \r.</summary>
-        public void AppendInline(string text, HistoryColor? color = null)
-        {
-            var formatted = FormatLine(text, color);
-            _currentLine.Clear();
-            _currentLine.Append(formatted);
-            System.Console.Write($"\r{formatted}\e[0K"); // clear to end of line
-        }
-
-        /// <summary>End the current inline line and move to the next.</summary>
-        public void FinishLine()
-        {
-            if (_currentLine.Length > 0)
+            color ??= HistoryColor.Default;
+            lock (_display._renderLock)
             {
-                System.Console.Write("\r\e[0K"); // clear the inline line
-                System.Console.WriteLine();
-                _currentLine.Clear();
+                System.Console.WriteLine(FormatLine(text, color));
             }
         }
     }

@@ -35,12 +35,23 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
         using var ws = new ClientWebSocket();
         ws.Options.SetRequestHeader("Authorization", $"Bearer {_apiKey}");
 
+        string? startupError = null;
         try
         {
             await ws.ConnectAsync(RealtimeUri, ct);
             await ConfigureSessionAsync(ws, ct);
         }
         catch (OperationCanceledException) { yield break; }
+        catch (Exception ex)
+        {
+            startupError = DescribeStartupFailure(ex);
+        }
+
+        if (startupError is not null)
+        {
+            yield return new TranscriptionEvent.Error(startupError);
+            yield break;
+        }
 
         var audioDone = new TaskCompletionSource();
         var feedTask = FeedAudioAsync(ws, audioInput, audioDone, ct);
@@ -48,30 +59,46 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
         var buffer = new byte[WebSocketBufferSize];
         using var receiveStream = new MemoryStream();
 
+        Exception? streamError = null;
         try
         {
-            while (!ct.IsCancellationRequested)
+            while (!ct.IsCancellationRequested && streamError is null)
             {
                 receiveStream.SetLength(0);
-                WebSocketReceiveResult? result;
+
+                TranscriptionEvent? evt = null;
+                var shouldBreak = false;
                 try
                 {
+                    WebSocketReceiveResult? result;
                     do
                     {
                         result = await ws.ReceiveAsync(buffer, ct);
                         receiveStream.Write(buffer, 0, result.Count);
                     } while (!result.EndOfMessage);
+
+                    if (result.MessageType == WebSocketMessageType.Close)
+                    {
+                        shouldBreak = true;
+                    }
+                    else
+                    {
+                        receiveStream.Position = 0;
+                        var parsed = ParseTranscriptionEvent(receiveStream);
+                        evt = parsed.Event;
+                        shouldBreak = parsed.ShouldBreak;
+                    }
                 }
                 catch (OperationCanceledException) { break; }
-
-                if (result.MessageType == WebSocketMessageType.Close)
+                catch (Exception ex)
+                {
+                    streamError = ex;
                     break;
+                }
 
-                receiveStream.Position = 0;
-                var parsed = ParseTranscriptionEvent(receiveStream);
-                if (parsed.Event is not null)
-                    yield return parsed.Event;
-                if (parsed.ShouldBreak)
+                if (evt is not null)
+                    yield return evt;
+                if (shouldBreak)
                     break;
             }
         }
@@ -91,6 +118,9 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
                 }
             }
         }
+
+        if (streamError is not null)
+            yield return new TranscriptionEvent.Error(DescribeStreamFailure(streamError));
     }
 
     /// <summary>
@@ -123,12 +153,41 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
         if (type == ErrorEventType)
         {
             var err = root.TryGetProperty("error", out var e)
-                ? e.GetRawText() : "(no details)";
+                ? ExtractErrorMessage(e) : "(no details)";
             return (new TranscriptionEvent.Error(err), true);
         }
 
         return (null, false);
     }
+
+    /// <summary>
+    /// Extracts the human-readable <c>message</c> from an OpenAI error object,
+    /// falling back to the raw JSON when the shape is unexpected.
+    /// </summary>
+    private static string ExtractErrorMessage(JsonElement error)
+    {
+        if (error.ValueKind == JsonValueKind.Object &&
+            error.TryGetProperty("message", out var message) &&
+            message.ValueKind == JsonValueKind.String)
+            return message.GetString() ?? error.GetRawText();
+        return error.GetRawText();
+    }
+
+    /// <summary>Maps a connect/session-config failure to a user-facing message.</summary>
+    private static string DescribeStartupFailure(Exception ex) => ex switch
+    {
+        WebSocketException => $"Could not connect to the OpenAI transcription service: {ex.Message}",
+        InvalidOperationException => $"OpenAI rejected the transcription session: {ex.Message}",
+        _ => $"Transcription could not start: {ex.Message}",
+    };
+
+    /// <summary>Maps a mid-stream failure to a user-facing message.</summary>
+    private static string DescribeStreamFailure(Exception ex) => ex switch
+    {
+        WebSocketException => $"Transcription stream disconnected: {ex.Message}",
+        JsonException => $"Received malformed transcription data: {ex.Message}",
+        _ => $"Transcription stream failed: {ex.Message}",
+    };
 
     private static async Task FeedAudioAsync(
         ClientWebSocket ws,
@@ -231,7 +290,7 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
             if (type == expectedType) return;
             if (type == ErrorEventType)
                 throw new InvalidOperationException(
-                    d.RootElement.GetProperty("error").GetRawText());
+                    ExtractErrorMessage(d.RootElement.GetProperty("error")));
         }
     }
 }

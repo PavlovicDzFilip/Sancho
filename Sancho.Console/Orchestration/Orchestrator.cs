@@ -136,6 +136,7 @@ public sealed class Orchestrator(
 
                 case TranscriptionEvent.Error error:
                     logger.LogWarning("Transcription error: {Message}", error.Message);
+                    display.History.AppendLine($"⚠ {error.Message}");
                     break;
             }
         }

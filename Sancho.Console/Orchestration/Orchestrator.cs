@@ -42,6 +42,7 @@ public sealed class Orchestrator(
         var claudeEvents = claudeService.RunAsync(cts.Token);
 
         display.History.AppendLine("🎤 Live transcription + Claude assistant started.");
+        display.History.AppendLine("   Flags: --continue / -c   pick a previous session to resume");
         display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
 
         if (claudeService.ContinueSession)

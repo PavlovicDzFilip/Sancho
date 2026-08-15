@@ -62,9 +62,21 @@ public sealed class ClaudeService
 
     public static void VerifyClaudeAvailable()
     {
+        var versionExit = RunClaudeCommand("--version");
+        if (versionExit != 0)
+            throw new InvalidOperationException(
+                $"`claude --version` exited with code {versionExit}.");
+
+        if (RunClaudeCommand("auth status") != 0)
+            throw new InvalidOperationException(
+                "Claude CLI is not logged in. Run `claude auth login` and try again.");
+    }
+
+    private static int RunClaudeCommand(string args)
+    {
         try
         {
-            var psi = new ProcessStartInfo("claude", "--version")
+            var psi = new ProcessStartInfo("claude", args)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -73,13 +85,7 @@ public sealed class ClaudeService
             };
             using var proc = Process.Start(psi)!;
             proc.WaitForExit(5_000);
-            if (proc.ExitCode != 0)
-                throw new InvalidOperationException(
-                    $"`claude --version` exited with code {proc.ExitCode}.");
-        }
-        catch (InvalidOperationException)
-        {
-            throw;
+            return proc.ExitCode;
         }
         catch (Exception ex)
         {

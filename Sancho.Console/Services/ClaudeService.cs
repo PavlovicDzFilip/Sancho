@@ -16,6 +16,8 @@ public sealed class ClaudeService
 {
     private readonly string _targetDirectory;
     private readonly string _systemPrompt;
+    private readonly bool _continueSession;
+    private readonly string? _resumeSessionId;
     private readonly Channel<string> _input = Channel.CreateUnbounded<string>();
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -45,6 +47,8 @@ public sealed class ClaudeService
                 "or set Claude:PromptFilePath in appsettings.json.");
 
         _systemPrompt = File.ReadAllText(promptPath).Trim();
+        _continueSession = o.ContinueSession;
+        _resumeSessionId = string.IsNullOrWhiteSpace(o.ResumeSessionId) ? null : o.ResumeSessionId;
     }
 
     // ── Public API ─────────────────────────────────────────────────
@@ -58,6 +62,176 @@ public sealed class ClaudeService
         if (!_ready)
             throw new InvalidOperationException("Claude is not ready to accept input.");
         _input.Writer.TryWrite(sentence);
+    }
+
+    /// <summary>Whether to resume an existing conversation on startup.</summary>
+    public bool ContinueSession => _continueSession || _resumeSessionId is not null;
+
+    /// <summary>The session id to resume, or null when continuing the most recent.</summary>
+    public string? ResumeSessionId => _resumeSessionId;
+
+    /// <summary>Summary of a stored session, for the <c>--list-sessions</c> command.</summary>
+    public sealed record SessionSummary(string Id, DateTime LastActivity, string Preview);
+
+    /// <summary>Lists stored sessions for a target directory, newest first.</summary>
+    public static IReadOnlyList<SessionSummary> ListSessions(string targetDirectory)
+    {
+        var dir = GetSessionsDirectory(targetDirectory);
+        if (!Directory.Exists(dir))
+            return Array.Empty<SessionSummary>();
+
+        return Directory.GetFiles(dir, "*.jsonl")
+            .Select(file => new SessionSummary(
+                Path.GetFileNameWithoutExtension(file),
+                File.GetLastWriteTime(file),
+                GetSessionPreview(file)))
+            .OrderByDescending(s => s.LastActivity)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Reads the trailing user/assistant text messages from the resumed (or
+    /// most recent) Claude session, in chronological order.
+    /// </summary>
+    public IReadOnlyList<(bool IsUser, string Text)> GetLastSessionMessages(int count)
+    {
+        var file = ResolveSessionFile();
+        return file is null ? Array.Empty<(bool IsUser, string Text)>() : ReadMessages(file, count);
+    }
+
+    private string? ResolveSessionFile()
+    {
+        var dir = GetSessionsDirectory(_targetDirectory);
+        if (!Directory.Exists(dir))
+            return null;
+
+        if (_resumeSessionId is { } id)
+        {
+            var path = Path.Combine(dir, id + ".jsonl");
+            return File.Exists(path) ? path : null;
+        }
+
+        return Directory.GetFiles(dir, "*.jsonl")
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .FirstOrDefault();
+    }
+
+    private static string GetSessionsDirectory(string targetDirectory)
+    {
+        var dir = string.IsNullOrWhiteSpace(targetDirectory)
+            ? Environment.CurrentDirectory
+            : targetDirectory;
+        return Path.Combine(GetClaudeConfigDir(), "projects", EncodeProjectDirectory(Path.GetFullPath(dir)));
+    }
+
+    private static IReadOnlyList<(bool IsUser, string Text)> ReadMessages(string file, int count)
+    {
+        var messages = new List<(bool IsUser, string Text)>();
+        foreach (var line in File.ReadLines(file))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("type", out var typeEl) && typeEl.GetString() is { } type
+                    && type is "user" or "assistant"
+                    && root.TryGetProperty("message", out var message))
+                {
+                    var role = message.TryGetProperty("role", out var roleEl) ? roleEl.GetString() : null;
+                    if (role is not ("user" or "assistant"))
+                        continue;
+
+                    var text = ExtractText(message);
+                    if (!string.IsNullOrWhiteSpace(text))
+                        messages.Add((role == "user", text));
+                }
+            }
+            catch (JsonException)
+            {
+                // Malformed line — skip it.
+            }
+        }
+
+        return messages.TakeLast(count).ToList();
+    }
+
+    private static string GetSessionPreview(string file)
+    {
+        foreach (var line in File.ReadLines(file))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("type", out var typeEl) && typeEl.GetString() is { } type
+                    && type is "user" or "assistant"
+                    && root.TryGetProperty("message", out var message))
+                {
+                    var text = ExtractText(message);
+                    if (!string.IsNullOrWhiteSpace(text))
+                        return Truncate(text, 120);
+                }
+            }
+            catch (JsonException)
+            {
+                // Malformed line — skip it.
+            }
+        }
+
+        return "(no messages)";
+    }
+
+    private static string Truncate(string text, int max) =>
+        text.Length <= max ? text : text[..max] + "…";
+
+    private static string GetClaudeConfigDir()
+    {
+        var configured = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+        return string.IsNullOrWhiteSpace(configured)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude")
+            : configured;
+    }
+
+    private static string EncodeProjectDirectory(string path)
+    {
+        var sb = new StringBuilder();
+        foreach (var c in path)
+            sb.Append(char.IsLetterOrDigit(c) ? c : '-');
+        return sb.ToString();
+    }
+
+    private static string ExtractText(JsonElement message)
+    {
+        if (!message.TryGetProperty("content", out var content))
+            return "";
+
+        if (content.ValueKind == JsonValueKind.String)
+            return content.GetString() ?? "";
+
+        if (content.ValueKind != JsonValueKind.Array)
+            return "";
+
+        var sb = new StringBuilder();
+        foreach (var block in content.EnumerateArray())
+        {
+            if (block.TryGetProperty("type", out var bt) && bt.GetString() == "text"
+                && block.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String)
+            {
+                if (sb.Length > 0)
+                    sb.Append(' ');
+                sb.Append(t.GetString());
+            }
+        }
+
+        return sb.ToString();
     }
 
     public static void VerifyClaudeAvailable()
@@ -106,8 +280,11 @@ public sealed class ClaudeService
     {
         // ── Spawn process ────────────────────────────────────────
         var escapedPrompt = _systemPrompt.Replace("\"", "\\\"");
+        var resumeFlag = _resumeSessionId is { } id
+            ? $" --resume \"{id}\""
+            : _continueSession ? " --continue" : "";
         var args =
-            $"--print --verbose --input-format stream-json --output-format stream-json --permission-mode bypassPermissions --system-prompt \"{escapedPrompt}\"";
+            $"--print --verbose --input-format stream-json --output-format stream-json --permission-mode bypassPermissions{resumeFlag} --system-prompt \"{escapedPrompt}\"";
 
         var psi = new ProcessStartInfo("claude", args)
         {

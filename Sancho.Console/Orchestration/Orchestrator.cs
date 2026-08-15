@@ -32,6 +32,9 @@ public sealed class Orchestrator(
         display.History.AppendLine("🎤 Live transcription + Claude assistant started.");
         display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
 
+        if (claudeService.ContinueSession)
+            PrintContinuedSession();
+
         // Render the transcript panel immediately so the task area is visible on startup.
         display.Transcript.Clear();
 
@@ -51,6 +54,29 @@ public sealed class Orchestrator(
         await Task.WhenAll(captureTask, transcribeTask, claudeTask);
 
         display.History.AppendLine("✅ Done.");
+    }
+
+    private void PrintContinuedSession()
+    {
+        const int maxMessages = 10;
+        const int maxLength = 300;
+
+        var messages = claudeService.GetLastSessionMessages(maxMessages);
+        if (messages.Count == 0)
+        {
+            display.History.AppendLine("   (no prior session found)", Display.HistoryColor.Dim);
+            return;
+        }
+
+        display.History.AppendLine("── Continuing last session ──", Display.HistoryColor.Dim);
+        foreach (var (isUser, text) in messages)
+        {
+            var shown = text.Length > maxLength ? text[..maxLength] + "…" : text;
+            if (isUser)
+                display.History.AppendLine($"💬 {shown}");
+            else
+                display.History.AppendLine($"🤖 {shown}", Display.HistoryColor.Claude);
+        }
     }
 
     // ── Claude event consumer ──────────────────────────────────────

@@ -55,6 +55,5 @@ public abstract record ClaudeEvent
 public enum ClaudeStatusKind
 {
     Info,
-    Stderr,
-    Warning
+    Stderr
 }

@@ -13,6 +13,11 @@ public sealed class Orchestrator(
     Display display,
     ILogger<Orchestrator> logger)
 {
+    // Most recent ~30 s of audio is kept in the channel: a disconnect outage
+    // buffers recent speech for replay without growing memory forever.
+    private const int BufferedAudioSeconds = 30;
+    private const int AudioChunkMilliseconds = 100; // matches MicrophoneAudioSource.BufferMilliseconds
+
     private readonly object _bufferLock = new();
     private readonly List<string> _buffer = new();
     private bool _claudeIsReady;
@@ -24,20 +29,32 @@ public sealed class Orchestrator(
         var audioSource = audioSourceFactory.Create();
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var channel = Channel.CreateUnbounded<byte[]>();
+        var channel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(
+            BufferedAudioSeconds * 1000 / AudioChunkMilliseconds)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleWriter = true,
+            SingleReader = true,
+        });
 
-        var captureTask = audioSource.CaptureAsync(channel.Writer, cts.Token);
+        using var captureCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var captureTask = audioSource.CaptureAsync(channel.Writer, captureCts.Token);
         var claudeEvents = claudeService.RunAsync(cts.Token);
 
         display.History.AppendLine("🎤 Live transcription + Claude assistant started.");
+        display.History.AppendLine("   Flags: --continue / -c   pick a previous session to resume");
         display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
+
+        if (claudeService.ContinueSession)
+            PrintContinuedSession();
 
         // Render the transcript panel immediately so the task area is visible on startup.
         display.Transcript.Clear();
+        display.Transcript.SetStatus("transcription: connecting…", Display.HistoryColor.Warn);
 
         var claudeTask = ConsumeClaudeEventsAsync(claudeEvents, cts.Token);
         var transcribeTask = RunTranscriptionLoopAsync(
-            channel.Reader.ReadAllAsync(cts.Token), cts.Token);
+            channel.Reader.ReadAllAsync(cts.Token), captureCts, cts.Token);
 
         ConsoleKeyInfo pressedKey;
         bool shouldStop;
@@ -51,6 +68,26 @@ public sealed class Orchestrator(
         await Task.WhenAll(captureTask, transcribeTask, claudeTask);
 
         display.History.AppendLine("✅ Done.");
+    }
+
+    private void PrintContinuedSession()
+    {
+        // Show the full previous session, in order, untruncated.
+        var messages = claudeService.GetSessionMessages();
+        if (messages.Count == 0)
+        {
+            display.History.AppendLine("   (no prior session found)", Display.HistoryColor.Dim);
+            return;
+        }
+
+        display.History.AppendLine("── Continuing last session ──", Display.HistoryColor.Dim);
+        foreach (var (isUser, text) in messages)
+        {
+            if (isUser)
+                display.History.AppendLine($"💬 {text}");
+            else
+                display.History.AppendLine($"🤖 {text}", Display.HistoryColor.Claude);
+        }
     }
 
     // ── Claude event consumer ──────────────────────────────────────
@@ -110,7 +147,7 @@ public sealed class Orchestrator(
     // ── Transcription loop ─────────────────────────────────────────
 
     private async Task RunTranscriptionLoopAsync(
-        IAsyncEnumerable<byte[]> audioInput, CancellationToken ct)
+        IAsyncEnumerable<byte[]> audioInput, CancellationTokenSource captureCts, CancellationToken ct)
     {
         await foreach (var evt in transcriptionService.TranscribeAsync(audioInput, ct))
         {
@@ -134,9 +171,24 @@ public sealed class Orchestrator(
 
                     break;
 
-                case TranscriptionEvent.Error error:
-                    logger.LogWarning("Transcription error: {Message}", error.Message);
-                    display.History.AppendLine($"⚠ {error.Message}");
+                case TranscriptionEvent.Connected:
+                    display.Transcript.SetStatus("transcription: connected", Display.HistoryColor.Ok);
+                    break;
+
+                case TranscriptionEvent.Reconnecting(var msg):
+                    logger.LogWarning("Transcription reconnect: {Message}", msg);
+                    display.Transcript.SetStatus("transcription: reconnecting", Display.HistoryColor.Warn);
+                    _currentDelta = null; // the server lost its partial transcript too
+                    UpdateTranscript();
+                    display.History.AppendLine($"⚠ {msg}");
+                    break;
+
+                case TranscriptionEvent.Failed(var msg):
+                    logger.LogError("Transcription failed: {Message}", msg);
+                    display.Transcript.SetStatus("transcription: failed", Display.HistoryColor.Error);
+                    display.History.AppendLine($"🛑 {msg}", Display.HistoryColor.Error);
+                    display.History.AppendLine("   Transcription stopped — restart Sancho to resume.", Display.HistoryColor.Dim);
+                    captureCts.Cancel();
                     break;
             }
         }

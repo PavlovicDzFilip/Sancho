@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Sancho.Console.Services;
@@ -16,6 +17,10 @@ public sealed class ClaudeService
 {
     private readonly string _targetDirectory;
     private readonly string _systemPrompt;
+    private readonly string? _resumeSessionId;
+    private readonly string _sessionId;
+    private readonly ILogger<ClaudeService> _logger;
+    private readonly SessionTitleService _titleService;
     private readonly Channel<string> _input = Channel.CreateUnbounded<string>();
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -27,12 +32,18 @@ public sealed class ClaudeService
     private TaskCompletionSource? _turnComplete;
     private volatile bool _ready;
 
-    public ClaudeService(IOptions<ClaudeOptions> options)
+    // First user message, captured for session title generation.
+    private string? _firstUserText;
+    private int _titleRequested;
+
+    public ClaudeService(
+        IOptions<ClaudeOptions> options,
+        string? resumeSessionId,
+        ILogger<ClaudeService> logger,
+        SessionTitleService titleService)
     {
         var o = options.Value;
-        _targetDirectory = string.IsNullOrWhiteSpace(o.TargetDirectory)
-            ? Environment.CurrentDirectory
-            : o.TargetDirectory;
+        _targetDirectory = o.TargetDirectory;
 
         var promptPath = Path.IsPathRooted(o.PromptFilePath)
             ? o.PromptFilePath
@@ -45,6 +56,10 @@ public sealed class ClaudeService
                 "or set Claude:PromptFilePath in appsettings.json.");
 
         _systemPrompt = File.ReadAllText(promptPath).Trim();
+        _resumeSessionId = resumeSessionId;
+        _logger = logger;
+        _titleService = titleService;
+        _sessionId = resumeSessionId ?? Guid.NewGuid().ToString("D");
     }
 
     // ── Public API ─────────────────────────────────────────────────
@@ -58,6 +73,196 @@ public sealed class ClaudeService
         if (!_ready)
             throw new InvalidOperationException("Claude is not ready to accept input.");
         _input.Writer.TryWrite(sentence);
+    }
+
+    /// <summary>Whether a previous conversation is being resumed on startup.</summary>
+    public bool ContinueSession => _resumeSessionId is not null;
+
+    /// <summary>Summary of a stored session, used by the <c>--continue</c> chooser.</summary>
+    /// <param name="Title">User-facing session name, when one was saved; <c>null</c> to fall back to <see cref="Preview"/>.</param>
+    public sealed record SessionSummary(string Id, DateTime LastActivity, string? Title, string Preview);
+
+    /// <summary>Resolves the configured target directory to an absolute path.</summary>
+    public static string ResolveTargetDirectory(string? configured) =>
+        Path.GetFullPath(string.IsNullOrWhiteSpace(configured) ? Environment.CurrentDirectory : configured);
+
+    /// <summary>Lists stored sessions for a target directory, newest first.</summary>
+    public static IReadOnlyList<SessionSummary> ListSessions(string targetDirectory)
+    {
+        var dir = GetSessionsDirectory(targetDirectory);
+        if (!Directory.Exists(dir))
+            return Array.Empty<SessionSummary>();
+
+        return Directory.GetFiles(dir, "*.jsonl")
+            .Select(file =>
+            {
+                var id = Path.GetFileNameWithoutExtension(file);
+                return new SessionSummary(
+                    id,
+                    File.GetLastWriteTime(file),
+                    GetSessionTitle(targetDirectory, id),
+                    GetSessionPreview(file));
+            })
+            .OrderByDescending(s => s.LastActivity)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Reads all user/assistant text messages from the resumed (or most
+    /// recent) Claude session, in chronological order.
+    /// </summary>
+    public IReadOnlyList<(bool IsUser, string Text)> GetSessionMessages()
+    {
+        var file = ResolveSessionFile();
+        return file is null ? Array.Empty<(bool IsUser, string Text)>() : ReadMessages(file);
+    }
+
+    private string? ResolveSessionFile()
+    {
+        var dir = GetSessionsDirectory(_targetDirectory);
+        if (!Directory.Exists(dir))
+            return null;
+
+        if (_resumeSessionId is { } id)
+        {
+            var path = Path.Combine(dir, id + ".jsonl");
+            return File.Exists(path) ? path : null;
+        }
+
+        return Directory.GetFiles(dir, "*.jsonl")
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .FirstOrDefault();
+    }
+
+    private static string GetSessionsDirectory(string targetDirectory) =>
+        Path.Combine(GetClaudeConfigDir(), "projects", EncodeProjectDirectory(targetDirectory));
+
+    private string GetTitlePath(string sessionId) =>
+        Path.Combine(GetSessionsDirectory(_targetDirectory), sessionId + ".title");
+
+    /// <summary>Reads the saved display name for a session, if any.</summary>
+    private static string? GetSessionTitle(string targetDirectory, string id)
+    {
+        try
+        {
+            var path = Path.Combine(GetSessionsDirectory(targetDirectory), id + ".title");
+            if (!File.Exists(path))
+                return null;
+
+            var title = File.ReadAllText(path).Trim();
+            return title.Length == 0 ? null : title;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<(bool IsUser, string Text)> ReadMessages(string file)
+    {
+        var messages = new List<(bool IsUser, string Text)>();
+        foreach (var line in File.ReadLines(file))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("type", out var typeEl) && typeEl.GetString() is { } type
+                    && type is "user" or "assistant"
+                    && root.TryGetProperty("message", out var message))
+                {
+                    var role = message.TryGetProperty("role", out var roleEl) ? roleEl.GetString() : null;
+                    if (role is not ("user" or "assistant"))
+                        continue;
+
+                    var text = ExtractText(message);
+                    if (!string.IsNullOrWhiteSpace(text))
+                        messages.Add((role == "user", text));
+                }
+            }
+            catch (JsonException)
+            {
+                // Malformed line — skip it.
+            }
+        }
+
+        return messages;
+    }
+
+    private static string GetSessionPreview(string file)
+    {
+        foreach (var line in File.ReadLines(file))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("type", out var typeEl) && typeEl.GetString() is { } type
+                    && type is "user" or "assistant"
+                    && root.TryGetProperty("message", out var message))
+                {
+                    var text = ExtractText(message);
+                    if (!string.IsNullOrWhiteSpace(text))
+                        return text.Substring(0, Math.Min(120, text.Length));
+                }
+            }
+            catch (JsonException)
+            {
+                // Malformed line — skip it.
+            }
+        }
+
+        return "(no messages)";
+    }
+
+    private static string GetClaudeConfigDir()
+    {
+        var configured = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+        return string.IsNullOrWhiteSpace(configured)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude")
+            : configured;
+    }
+
+    private static string EncodeProjectDirectory(string path)
+    {
+        var sb = new StringBuilder();
+        foreach (var c in path)
+            sb.Append(char.IsLetterOrDigit(c) ? c : '-');
+        return sb.ToString();
+    }
+
+    private static string ExtractText(JsonElement message)
+    {
+        if (!message.TryGetProperty("content", out var content))
+            return "";
+
+        if (content.ValueKind == JsonValueKind.String)
+            return content.GetString() ?? "";
+
+        if (content.ValueKind != JsonValueKind.Array)
+            return "";
+
+        var sb = new StringBuilder();
+        foreach (var block in content.EnumerateArray())
+        {
+            if (block.TryGetProperty("type", out var bt) && bt.GetString() == "text"
+                && block.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String)
+            {
+                if (sb.Length > 0)
+                    sb.Append(' ');
+                sb.Append(t.GetString());
+            }
+        }
+
+        return sb.ToString();
     }
 
     public static void VerifyClaudeAvailable()
@@ -106,8 +311,11 @@ public sealed class ClaudeService
     {
         // ── Spawn process ────────────────────────────────────────
         var escapedPrompt = _systemPrompt.Replace("\"", "\\\"");
+        var resumeFlag = _resumeSessionId is { } id
+            ? $" --resume \"{id}\""
+            : $" --session-id \"{_sessionId}\"";
         var args =
-            $"--print --verbose --input-format stream-json --output-format stream-json --permission-mode bypassPermissions --system-prompt \"{escapedPrompt}\"";
+            $"--print --verbose --input-format stream-json --output-format stream-json --permission-mode bypassPermissions{resumeFlag} --system-prompt \"{escapedPrompt}\"";
 
         var psi = new ProcessStartInfo("claude", args)
         {
@@ -189,6 +397,12 @@ public sealed class ClaudeService
             {
                 _ready = false;
 
+                if (_firstUserText is null)
+                {
+                    _firstUserText = sentence.Trim();
+                    RequestTitleGeneration();
+                }
+
                 var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 _turnComplete = tcs;
 
@@ -201,13 +415,9 @@ public sealed class ClaudeService
                 await _stdin!.WriteLineAsync(json);
                 writer.TryWrite(ClaudeEvent.TurnStart.Instance);
 
-                var timeout = Task.Delay(TimeSpan.FromMinutes(2), ct);
-                var completed = await Task.WhenAny(tcs.Task, timeout);
-                if (completed == timeout)
-                {
-                    writer.TryWrite(new ClaudeEvent.Status(
-                        "⚠ Turn timed out", ClaudeStatusKind.Warning));
-                }
+                // No turn timeout — wait until Claude finishes. The watchdog
+                // completes this on process exit; cancellation aborts the wait.
+                await tcs.Task.WaitAsync(ct);
 
                 _turnComplete = null;
                 _ready = true;
@@ -380,6 +590,42 @@ public sealed class ClaudeService
                 : "?";
             var isError = block.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
             writer.TryWrite(new ClaudeEvent.ToolResult(toolId!, isError));
+        }
+    }
+
+    // ── Session title generation ───────────────────────────────────
+
+    /// <summary>
+    /// Kicks off one-time background title generation as soon as the first
+    /// message is sent, unless the session already has a name.
+    /// </summary>
+    private void RequestTitleGeneration()
+    {
+        if (Interlocked.Exchange(ref _titleRequested, 1) != 0)
+            return;
+        if (File.Exists(GetTitlePath(_sessionId)))
+            return;
+
+        _ = Task.Run(GenerateAndSaveTitleAsync);
+    }
+
+    private async Task GenerateAndSaveTitleAsync()
+    {
+        try
+        {
+            if (File.Exists(GetTitlePath(_sessionId)))
+                return;
+
+            var title = await _titleService.GenerateTitleAsync(_firstUserText);
+            if (title is null)
+                return;
+
+            Directory.CreateDirectory(GetSessionsDirectory(_targetDirectory));
+            File.WriteAllText(GetTitlePath(_sessionId), title);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Session title generation failed: {Message}", ex.Message);
         }
     }
 

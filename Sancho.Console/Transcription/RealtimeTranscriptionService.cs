@@ -8,7 +8,8 @@ namespace Sancho.Console.Transcription;
 
 /// <summary>
 /// Connects to OpenAI's realtime WebSocket API and transcribes
-/// PCM16 24kHz mono audio via gpt-realtime-whisper.
+/// PCM16 24kHz mono audio via gpt-realtime-whisper. When the
+/// connection drops it reconnects with exponential backoff.
 /// </summary>
 public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> options)
 {
@@ -19,6 +20,15 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
     private const string DeltaEventType = "conversation.item.input_audio_transcription.delta";
     private const string CompletedEventType = "conversation.item.input_audio_transcription.completed";
     private const string ErrorEventType = "error";
+    private const int MaxReconnectAttempts = 5;
+    private static readonly TimeSpan[] BackoffDelays =
+    [
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(4),
+        TimeSpan.FromSeconds(8),
+        TimeSpan.FromSeconds(16),
+    ];
     private static readonly Uri RealtimeUri =
         new($"wss://api.openai.com/v1/realtime?model={RealtimeModel}");
 
@@ -28,107 +38,144 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
     /// Reads PCM16 chunks from <paramref name="audioInput"/>, sends them to OpenAI,
     /// and yields transcription events as they arrive.
     /// </summary>
+    /// <remarks>
+    /// When the connection drops (or the initial connect fails), a
+    /// <see cref="TranscriptionEvent.Reconnecting"/> event is emitted and the
+    /// connection is retried with exponential backoff — audio produced during the
+    /// outage keeps accumulating in <paramref name="audioInput"/> and is sent once
+    /// the connection is back. A successful connection resets the retry policy.
+    /// After <see cref="MaxReconnectAttempts"/> consecutive failures a single
+    /// <see cref="TranscriptionEvent.Failed"/> event is emitted and the stream ends.
+    /// A <see cref="TranscriptionEvent.Connected"/> event is emitted after each
+    /// successful connection so the UI can show the live state.
+    /// </remarks>
     public async IAsyncEnumerable<TranscriptionEvent> TranscribeAsync(
         IAsyncEnumerable<byte[]> audioInput,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        using var ws = new ClientWebSocket();
-        ws.Options.SetRequestHeader("Authorization", $"Bearer {_apiKey}");
+        var failures = 0;
 
-        string? startupError = null;
-        try
+        while (!ct.IsCancellationRequested)
         {
-            await ws.ConnectAsync(RealtimeUri, ct);
-            await ConfigureSessionAsync(ws, ct);
-        }
-        catch (OperationCanceledException) { yield break; }
-        catch (Exception ex)
-        {
-            startupError = DescribeStartupFailure(ex);
-        }
+            using var ws = new ClientWebSocket();
+            ws.Options.SetRequestHeader("Authorization", $"Bearer {_apiKey}");
 
-        if (startupError is not null)
-        {
-            yield return new TranscriptionEvent.Error(startupError);
-            yield break;
-        }
-
-        var audioDone = new TaskCompletionSource();
-        var feedTask = FeedAudioAsync(ws, audioInput, audioDone, ct);
-
-        var buffer = new byte[WebSocketBufferSize];
-        using var receiveStream = new MemoryStream();
-
-        Exception? streamError = null;
-        try
-        {
-            while (!ct.IsCancellationRequested && streamError is null)
+            string? dropReason;
+            try
             {
-                receiveStream.SetLength(0);
+                await ws.ConnectAsync(RealtimeUri, ct);
+                await ConfigureSessionAsync(ws, ct);
+                dropReason = null;
+            }
+            catch (OperationCanceledException) { yield break; }
+            catch (Exception ex)
+            {
+                dropReason = DescribeStartupFailure(ex);
+            }
 
-                TranscriptionEvent? evt = null;
-                var shouldBreak = false;
+            if (dropReason is null)
+            {
+                failures = 0; // connected — restart the retry policy from zero
+                yield return new TranscriptionEvent.Connected();
+
+                var audioDone = new TaskCompletionSource();
+                var feedTask = FeedAudioAsync(ws, audioInput, audioDone, ct);
+
+                var buffer = new byte[WebSocketBufferSize];
+                using var receiveStream = new MemoryStream();
+
                 try
                 {
-                    WebSocketReceiveResult? result;
-                    do
+                    while (!ct.IsCancellationRequested && dropReason is null)
                     {
-                        result = await ws.ReceiveAsync(buffer, ct);
-                        receiveStream.Write(buffer, 0, result.Count);
-                    } while (!result.EndOfMessage);
+                        receiveStream.SetLength(0);
 
-                    if (result.MessageType == WebSocketMessageType.Close)
-                    {
-                        shouldBreak = true;
-                    }
-                    else
-                    {
-                        receiveStream.Position = 0;
-                        var parsed = ParseTranscriptionEvent(receiveStream);
-                        evt = parsed.Event;
-                        shouldBreak = parsed.ShouldBreak;
+                        TranscriptionEvent? evt = null;
+                        try
+                        {
+                            WebSocketReceiveResult? result;
+                            do
+                            {
+                                result = await ws.ReceiveAsync(buffer, ct);
+                                receiveStream.Write(buffer, 0, result.Count);
+                            } while (!result.EndOfMessage);
+
+                            if (result.MessageType == WebSocketMessageType.Close)
+                            {
+                                dropReason = "the server closed the connection";
+                                break;
+                            }
+
+                            receiveStream.Position = 0;
+                            var parsed = ParseTranscriptionEvent(receiveStream);
+                            evt = parsed.Event;
+                            if (parsed.EndReason is not null)
+                            {
+                                dropReason = parsed.EndReason;
+                                break;
+                            }
+                        }
+                        catch (OperationCanceledException) { break; }
+                        catch (Exception ex)
+                        {
+                            dropReason = DescribeStreamFailure(ex);
+                            break;
+                        }
+
+                        if (evt is not null)
+                            yield return evt;
                     }
                 }
-                catch (OperationCanceledException) { break; }
-                catch (Exception ex)
+                finally
                 {
-                    streamError = ex;
-                    break;
+                    audioDone.TrySetResult();
+                    await feedTask;
+                    if (ws.State == WebSocketState.Open)
+                    {
+                        try
+                        {
+                            await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+                        }
+                        catch
+                        {
+                            // nothing to do, we are closing the stream already
+                        }
+                    }
                 }
-
-                if (evt is not null)
-                    yield return evt;
-                if (shouldBreak)
-                    break;
             }
-        }
-        finally
-        {
-            audioDone.TrySetResult();
-            await feedTask;
-            if (ws.State == WebSocketState.Open)
+
+            if (dropReason is null)
+                yield break; // cancelled — stop without retrying
+
+            // ── Connection lost — retry or give up ──
+            failures++;
+            if (failures > MaxReconnectAttempts)
             {
-                try
-                {
-                    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
-                }
-                catch
-                {
-                    // nothing to do, we are closing the stream already
-                }
+                yield return new TranscriptionEvent.Failed(
+                    $"Transcription failed after {MaxReconnectAttempts} reconnect attempts — last error: {dropReason}");
+                yield break;
+            }
+
+            yield return new TranscriptionEvent.Reconnecting(
+                $"transcription disconnected ({dropReason}) — reconnecting in {BackoffDelays[failures - 1].TotalSeconds:0}s… attempt {failures}/{MaxReconnectAttempts}");
+
+            try
+            {
+                await Task.Delay(BackoffDelays[failures - 1], ct);
+            }
+            catch (OperationCanceledException)
+            {
+                yield break;
             }
         }
-
-        if (streamError is not null)
-            yield return new TranscriptionEvent.Error(DescribeStreamFailure(streamError));
     }
 
     /// <summary>
     /// Parses a transcription event from a JSON WebSocket message.
-    /// Returns the text to yield (or null if nothing to emit) and a flag
-    /// indicating whether the receive loop should break.
+    /// Returns the text event to yield (or null if nothing to emit) and an
+    /// end reason that is non-null when the receive loop should break.
     /// </summary>
-    private static (TranscriptionEvent? Event, bool ShouldBreak) ParseTranscriptionEvent(MemoryStream stream)
+    private static (TranscriptionEvent? Event, string? EndReason) ParseTranscriptionEvent(MemoryStream stream)
     {
         using var doc = JsonDocument.Parse(stream);
         var root = doc.RootElement;
@@ -138,26 +185,26 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
         {
             var text = delta.GetString();
             return string.IsNullOrWhiteSpace(text)
-                ? (null, false)
-                : (new TranscriptionEvent.Delta(text), false);
+                ? (null, null)
+                : (new TranscriptionEvent.Delta(text), null);
         }
 
         if (type == CompletedEventType && root.TryGetProperty("transcript", out var transcript))
         {
             var text = transcript.GetString() ?? "";
             return string.IsNullOrWhiteSpace(text)
-                ? (null, false)
-                : (new TranscriptionEvent.Completed(text), false);
+                ? (null, null)
+                : (new TranscriptionEvent.Completed(text), null);
         }
 
         if (type == ErrorEventType)
         {
             var err = root.TryGetProperty("error", out var e)
                 ? ExtractErrorMessage(e) : "(no details)";
-            return (new TranscriptionEvent.Error(err), true);
+            return (null, $"the server reported an error: {err}");
         }
 
-        return (null, false);
+        return (null, null);
     }
 
     /// <summary>
@@ -173,20 +220,20 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
         return error.GetRawText();
     }
 
-    /// <summary>Maps a connect/session-config failure to a user-facing message.</summary>
+    /// <summary>Maps a connect/session-config failure to a user-facing reason.</summary>
     private static string DescribeStartupFailure(Exception ex) => ex switch
     {
-        WebSocketException => $"Could not connect to the OpenAI transcription service: {ex.Message}",
+        WebSocketException => $"could not connect to the OpenAI transcription service: {ex.Message}",
         InvalidOperationException => $"OpenAI rejected the transcription session: {ex.Message}",
-        _ => $"Transcription could not start: {ex.Message}",
+        _ => $"transcription could not start: {ex.Message}",
     };
 
-    /// <summary>Maps a mid-stream failure to a user-facing message.</summary>
+    /// <summary>Maps a mid-stream failure to a user-facing reason.</summary>
     private static string DescribeStreamFailure(Exception ex) => ex switch
     {
-        WebSocketException => $"Transcription stream disconnected: {ex.Message}",
-        JsonException => $"Received malformed transcription data: {ex.Message}",
-        _ => $"Transcription stream failed: {ex.Message}",
+        WebSocketException => $"the stream dropped: {ex.Message}",
+        JsonException => $"malformed transcription data: {ex.Message}",
+        _ => $"the stream failed: {ex.Message}",
     };
 
     private static async Task FeedAudioAsync(

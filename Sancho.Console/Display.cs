@@ -17,6 +17,9 @@ public sealed class Display : IDisposable
         public static readonly HistoryColor Default = new("\e[0m");
         public static readonly HistoryColor Claude = new("\e[38;5;214m");
         public static readonly HistoryColor Dim = new("\e[38;5;240m");
+        public static readonly HistoryColor Error = new("\e[1;31m"); // bold red — fatal failures
+        public static readonly HistoryColor Ok = new("\e[32m");       // green — healthy state
+        public static readonly HistoryColor Warn = new("\e[33m");     // yellow — transient issues
         public string Ansi { get; }
         private HistoryColor(string ansi) => Ansi = ansi;
     }
@@ -85,6 +88,8 @@ public sealed class Display : IDisposable
     public sealed class TranscriptPanel
     {
         private readonly Display _display;
+        private string? _statusText;
+        private HistoryColor? _statusColor;
 
         internal TranscriptPanel(Display display) => _display = display;
 
@@ -119,9 +124,8 @@ public sealed class Display : IDisposable
                     System.Console.Write(new string(' ', width));
                 }
 
-                // Separator
-                System.Console.SetCursorPosition(0, startRow);
-                System.Console.Write(new string('─', width));
+                // Separator (shows the connection status when set)
+                DrawSeparator();
 
                 // Content (bottom-up) — only the most recent lines fit
                 var row = startRow + TranscriptRows - 1;
@@ -134,6 +138,44 @@ public sealed class Display : IDisposable
                 // Restore cursor
                 System.Console.SetCursorPosition(left, top);
             }
+        }
+
+        /// <summary>Updates the connection status shown on the separator line.</summary>
+        public void SetStatus(string text, HistoryColor color)
+        {
+            lock (_display._renderLock)
+            {
+                _statusText = text;
+                _statusColor = color;
+                DrawSeparator();
+            }
+        }
+
+        /// <summary>Draws the separator line, with the status centered when set.</summary>
+        private void DrawSeparator()
+        {
+            var total = System.Console.WindowHeight;
+            var width = System.Console.WindowWidth;
+            var startRow = Math.Max(0, total - TranscriptRows);
+            var (left, top) = System.Console.GetCursorPosition();
+
+            System.Console.SetCursorPosition(0, startRow);
+
+            var label = _statusText is null ? "" : $" {_statusText} ";
+            if (label.Length == 0)
+            {
+                System.Console.Write(new string('─', width));
+            }
+            else
+            {
+                var leftWidth = Math.Max(0, (width - label.Length) / 2);
+                var rightWidth = Math.Max(0, width - leftWidth - label.Length);
+                System.Console.Write(new string('─', leftWidth));
+                System.Console.Write(FormatLine(label, _statusColor!));
+                System.Console.Write(new string('─', rightWidth));
+            }
+
+            System.Console.SetCursorPosition(left, top);
         }
 
         public void Clear()

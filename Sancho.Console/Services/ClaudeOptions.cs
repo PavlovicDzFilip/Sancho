@@ -16,15 +16,4 @@ public sealed class ClaudeOptions
     /// Relative paths resolve against the application base directory.
     /// </summary>
     public string PromptFilePath { get; set; } = "prompt.md";
-
-    /// <summary>
-    /// Continue the most recent Claude conversation instead of starting fresh.
-    /// Set via the <c>--continue</c> command-line flag.
-    /// </summary>
-    public bool ContinueSession { get; set; }
-
-    /// <summary>
-    /// Resume a specific session by id. Set via the <c>--resume &lt;id&gt;</c> flag.
-    /// </summary>
-    public string ResumeSessionId { get; set; } = "";
 }

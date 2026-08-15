@@ -1,30 +1,46 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Sancho.Console;
 using Sancho.Console.Audio;
 using Sancho.Console.Orchestration;
 using Sancho.Console.Services;
 using Sancho.Console.Transcription;
+using Spectre.Console;
 // Display is in the root namespace
 
-// ── Parse command-line flags ──────────────────────────────────────
-var continueSession = args.Contains("--continue") || args.Contains("-c");
-var listSessions = args.Contains("--list-sessions") || args.Contains("-l");
-
-string? resumeSessionId = null;
-for (var i = 0; i < args.Length - 1; i++)
+static string? ChooseSession(string targetDirectory)
 {
-    if (args[i] == "--resume" || args[i] == "-r")
+    var sessions = ClaudeService.ListSessions(targetDirectory);
+
+    if (sessions.Count == 0)
     {
-        resumeSessionId = args[i + 1];
-        break;
+        AnsiConsole.MarkupLine("[yellow]No previous sessions found — starting fresh.[/]");
+        return null;
     }
+
+    var choices = new List<ClaudeService.SessionSummary>
+    {
+        new(string.Empty, DateTime.MinValue, null, "Start a fresh session")
+    };
+    choices.AddRange(sessions);
+
+    var chosen = AnsiConsole.Prompt(
+        new SelectionPrompt<ClaudeService.SessionSummary>()
+            .Title("Choose a session to continue")
+            .UseConverter(s => s.Id.Length == 0
+                ? s.Preview
+                : $"{s.LastActivity:yyyy-MM-dd HH:mm}  {Markup.Escape(s.Title ?? s.Preview)}")
+            .AddChoices(choices));
+
+    return chosen.Id.Length == 0 ? null : chosen.Id;
 }
 
-// ── Verify prerequisites (skipped for the read-only list command) ──
-if (!listSessions)
-    ClaudeService.VerifyClaudeAvailable();
+// ── Verify prerequisites ──────────────────────────────────────────
+ClaudeService.VerifyClaudeAvailable();
+
+var continueSession = args.Contains("--continue") || args.Contains("-c");
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -41,42 +57,25 @@ builder.Services.AddOptions<TranscriptionOptions>()
 builder.Services.AddOptions<ClaudeOptions>()
     .Bind(builder.Configuration.GetSection("Claude"));
 
-builder.Services.Configure<ClaudeOptions>(o =>
-{
-    o.ContinueSession = continueSession;
-    o.ResumeSessionId = resumeSessionId ?? "";
-});
-
 builder.Services.AddSingleton<Display>();
 builder.Services.AddSingleton<MicrophoneAudioSourceFactory>();
 builder.Services.AddSingleton<RealtimeTranscriptionService>();
-builder.Services.AddSingleton<ClaudeService>();
+builder.Services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromSeconds(45) });
+builder.Services.AddSingleton<SessionTitleService>();
+
+var targetDir = ClaudeService.ResolveTargetDirectory(builder.Configuration["Claude:TargetDirectory"]);
+var resumeSessionId = continueSession ? ChooseSession(targetDir) : null;
+
+builder.Services.Configure<ClaudeOptions>(o => o.TargetDirectory = targetDir);
+builder.Services.AddSingleton<ClaudeService>(sp =>
+    new ClaudeService(
+        sp.GetRequiredService<IOptions<ClaudeOptions>>(),
+        resumeSessionId,
+        sp.GetRequiredService<ILogger<ClaudeService>>(),
+        sp.GetRequiredService<SessionTitleService>()));
 builder.Services.AddSingleton<Orchestrator>();
 
-var targetDir = builder.Configuration["Claude:TargetDirectory"] ?? "";
 var host = builder.Build();
-
-if (listSessions)
-{
-    var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Sancho.Sessions");
-    var sessions = ClaudeService.ListSessions(targetDir);
-
-    if (sessions.Count == 0)
-    {
-        logger.LogInformation("No sessions found for {Directory}.",
-            string.IsNullOrWhiteSpace(targetDir) ? Environment.CurrentDirectory : targetDir);
-    }
-    else
-    {
-        logger.LogInformation("Sessions for {Directory}:",
-            string.IsNullOrWhiteSpace(targetDir) ? Environment.CurrentDirectory : targetDir);
-        foreach (var s in sessions)
-            logger.LogInformation("{Id}  {Time}  {Preview}",
-                s.Id, s.LastActivity.ToString("yyyy-MM-dd HH:mm"), s.Preview);
-    }
-
-    return 0;
-}
 
 using var cts = new CancellationTokenSource();
 var orchestrator = host.Services.GetRequiredService<Orchestrator>();

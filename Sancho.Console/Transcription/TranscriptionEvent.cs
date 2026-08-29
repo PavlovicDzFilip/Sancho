@@ -1,7 +1,7 @@
 namespace Sancho.Console.Transcription;
 
 /// <summary>
-/// Events yielded by <see cref="RealtimeTranscriptionService"/>:
+/// Events yielded by <see cref="ITranscriptionService"/>:
 /// transcription output and connection status.
 /// </summary>
 public abstract record TranscriptionEvent

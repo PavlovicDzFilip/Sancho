@@ -12,6 +12,7 @@ namespace Sancho.Console.Transcription;
 /// connection drops it reconnects with exponential backoff.
 /// </summary>
 public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> options)
+    : ITranscriptionService
 {
     private const string RealtimeModel = "gpt-realtime-2.1";
     private const string TranscriptionModel = "gpt-realtime-whisper";

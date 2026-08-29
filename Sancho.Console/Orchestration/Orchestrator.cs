@@ -8,7 +8,7 @@ namespace Sancho.Console.Orchestration;
 
 public sealed class Orchestrator(
     MicrophoneAudioSourceFactory audioSourceFactory,
-    RealtimeTranscriptionService transcriptionService,
+    ITranscriptionService transcriptionService,
     ClaudeService claudeService,
     Display display,
     ILogger<Orchestrator> logger)

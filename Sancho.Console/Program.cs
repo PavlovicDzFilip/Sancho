@@ -60,6 +60,8 @@ builder.Services.AddOptions<ClaudeOptions>()
 builder.Services.AddSingleton<Display>();
 builder.Services.AddSingleton<MicrophoneAudioSourceFactory>();
 builder.Services.AddSingleton<RealtimeTranscriptionService>();
+builder.Services.AddSingleton<ITranscriptionService>(sp =>
+    sp.GetRequiredService<RealtimeTranscriptionService>());
 builder.Services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromSeconds(45) });
 builder.Services.AddSingleton<SessionTitleService>();
 

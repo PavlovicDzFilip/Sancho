@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Sancho.Console.Transcription;
 
 namespace Sancho.Console.Services;
@@ -12,17 +12,13 @@ namespace Sancho.Console.Services;
 /// a <c>claude -p</c> call, this never creates a Claude session file.
 /// </summary>
 public sealed class SessionTitleService(
-    IOptions<TranscriptionOptions> transcriptionOptions,
+    TranscriptionOptions transcriptionOptions,
     HttpClient httpClient,
     ILogger<SessionTitleService> logger)
 {
     private const string TitleModel = "gpt-4o-mini";
 
-    private readonly string _apiKey = transcriptionOptions.Value.ApiKey;
-    private readonly JsonSerializerOptions _jsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
-    };
+    private readonly string _apiKey = transcriptionOptions.ApiKey;
 
     /// <summary>
     /// Returns a cleaned 2-6 word title for the first user message, or
@@ -35,12 +31,16 @@ public sealed class SessionTitleService(
         if (prompt is null)
             return null;
 
-        var requestJson = JsonSerializer.Serialize(new
+        var requestJson = new JsonObject
         {
-            model = TitleModel,
-            messages = new[] { new { role = "user", content = prompt } },
-            max_completion_tokens = 40
-        }, _jsonOptions);
+            ["model"] = TitleModel,
+            ["messages"] = new JsonArray(new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = prompt
+            }),
+            ["max_completion_tokens"] = 40
+        }.ToJsonString();
 
         using var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
         using var request = new HttpRequestMessage(

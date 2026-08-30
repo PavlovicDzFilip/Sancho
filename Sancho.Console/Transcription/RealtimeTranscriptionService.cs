@@ -2,7 +2,7 @@ using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Extensions.Options;
+using System.Text.Json.Nodes;
 
 namespace Sancho.Console.Transcription;
 
@@ -11,7 +11,7 @@ namespace Sancho.Console.Transcription;
 /// PCM16 24kHz mono audio via gpt-realtime-whisper. When the
 /// connection drops it reconnects with exponential backoff.
 /// </summary>
-public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> options)
+public sealed class RealtimeTranscriptionService(TranscriptionOptions options)
     : ITranscriptionService
 {
     private const string RealtimeModel = "gpt-realtime-2.1";
@@ -33,7 +33,7 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
     private static readonly Uri RealtimeUri =
         new($"wss://api.openai.com/v1/realtime?model={RealtimeModel}");
 
-    private readonly string _apiKey = options.Value.ApiKey;
+    private readonly string _apiKey = options.ApiKey;
 
     /// <summary>
     /// Reads PCM16 chunks from <paramref name="audioInput"/>, sends them to OpenAI,
@@ -250,7 +250,11 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
                 var base64 = Convert.ToBase64String(chunk);
                 try
                 {
-                    await SendJsonAsync(ws, new { type = "input_audio_buffer.append", audio = base64 }, ct);
+                    await SendJsonAsync(ws, new JsonObject
+                    {
+                        ["type"] = "input_audio_buffer.append",
+                        ["audio"] = base64
+                    }, ct);
                 }
                 catch (Exception) when (ws.State != WebSocketState.Open)
                 {
@@ -275,31 +279,32 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
     }
 
     /// <summary>Builds the session configuration object for the OpenAI Realtime API.</summary>
-    private static object BuildSessionConfig()
+    /// <remarks>Built as a <see cref="JsonObject"/> so serialization is AOT-safe.</remarks>
+    private static JsonObject BuildSessionConfig()
     {
-        return new
+        return new JsonObject
         {
-            type = "session.update",
-            session = new
+            ["type"] = "session.update",
+            ["session"] = new JsonObject
             {
-                type = "realtime",
-                output_modalities = new[] { "text" },
-                audio = new
+                ["type"] = "realtime",
+                ["output_modalities"] = new JsonArray("text"),
+                ["audio"] = new JsonObject
                 {
-                    input = new
+                    ["input"] = new JsonObject
                     {
-                        format = new { type = "audio/pcm", rate = 24000 },
-                        turn_detection = new
+                        ["format"] = new JsonObject { ["type"] = "audio/pcm", ["rate"] = 24000 },
+                        ["turn_detection"] = new JsonObject
                         {
-                            type = "server_vad",
-                            threshold = 0.5,
-                            prefix_padding_ms = 300,
-                            silence_duration_ms = 2000
+                            ["type"] = "server_vad",
+                            ["threshold"] = 0.5,
+                            ["prefix_padding_ms"] = 300,
+                            ["silence_duration_ms"] = 2000
                         },
-                        transcription = new
+                        ["transcription"] = new JsonObject
                         {
-                            model = TranscriptionModel,
-                            language = "en"
+                            ["model"] = TranscriptionModel,
+                            ["language"] = "en"
                         }
                     }
                 }
@@ -308,10 +313,9 @@ public sealed class RealtimeTranscriptionService(IOptions<TranscriptionOptions> 
     }
 
     private static async Task SendJsonAsync(
-        ClientWebSocket ws, object obj, CancellationToken ct)
+        ClientWebSocket ws, JsonObject obj, CancellationToken ct)
     {
-        var json = JsonSerializer.Serialize(obj);
-        var bytes = Encoding.UTF8.GetBytes(json);
+        var bytes = Encoding.UTF8.GetBytes(obj.ToJsonString());
         await ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
     }
 

@@ -33,31 +33,24 @@ public sealed class ClaudeService
     private int _titleRequested;
 
     public ClaudeService(
-        ClaudeOptions options,
         string? resumeSessionId,
         ILogger<ClaudeService> logger,
         SessionTitleService titleService)
     {
-        _targetDirectory = options.TargetDirectory;
+        _targetDirectory = Directory.GetCurrentDirectory();
         _logger = logger;
 
-        var (promptPath, isDefaultFallback) = ResolvePromptPath(options.PromptFilePath, _targetDirectory);
+        var promptPath = Path.Combine(_targetDirectory, ".sancho.md");
 
         if (!File.Exists(promptPath))
             throw new FileNotFoundException(
                 $"System prompt file not found at '{promptPath}'. " +
-                "Add a .sancho.md file to the target directory, place a prompt.md next to sancho.exe, " +
-                "or set 'promptFilePath' with 'sancho config set'.");
+                "Create a .sancho.md file in the current directory and try again.");
 
         _systemPrompt = File.ReadAllText(promptPath).Trim();
         _resumeSessionId = resumeSessionId;
         _titleService = titleService;
         _sessionId = resumeSessionId ?? Guid.NewGuid().ToString("D");
-
-        if (isDefaultFallback)
-            _logger.LogInformation(
-                "No .sancho.md found in '{Directory}' — using the default prompt.md next to sancho.exe.",
-                _targetDirectory);
     }
 
     // ── Public API ─────────────────────────────────────────────────
@@ -79,30 +72,6 @@ public sealed class ClaudeService
     /// <summary>Summary of a stored session, used by the <c>--continue</c> chooser.</summary>
     /// <param name="Title">User-facing session name, when one was saved; <c>null</c> to fall back to <see cref="Preview"/>.</param>
     public sealed record SessionSummary(string Id, DateTime LastActivity, string? Title, string Preview);
-
-    /// <summary>Resolves the configured target directory to an absolute path.</summary>
-    public static string ResolveTargetDirectory(string? configured) =>
-        Path.GetFullPath(string.IsNullOrWhiteSpace(configured) ? Environment.CurrentDirectory : configured);
-
-    /// <summary>
-    /// Resolves the system prompt: an explicitly configured path wins;
-    /// otherwise <c>.sancho.md</c> in the target directory, falling back to
-    /// <c>prompt.md</c> next to the executable. The flag reports whether the
-    /// default fallback was used.
-    /// </summary>
-    private static (string Path, bool IsDefaultFallback) ResolvePromptPath(
-        string? configured, string targetDirectory)
-    {
-        if (!string.IsNullOrWhiteSpace(configured))
-            return (Path.IsPathRooted(configured)
-                ? configured
-                : Path.Combine(AppContext.BaseDirectory, configured), false);
-
-        var projectPrompt = Path.Combine(targetDirectory, ".sancho.md");
-        return File.Exists(projectPrompt)
-            ? (projectPrompt, false)
-            : (Path.Combine(AppContext.BaseDirectory, "prompt.md"), true);
-    }
 
     /// <summary>Lists stored sessions for a target directory, newest first.</summary>
     public static IReadOnlyList<SessionSummary> ListSessions(string targetDirectory)

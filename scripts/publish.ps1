@@ -31,7 +31,6 @@ foreach ($rid in $rids) {
              else { "sancho-$rid" }
     $exeName = if ($rid -eq "win-x64") { "sancho.exe" } else { "sancho" }
     Copy-Item (Join-Path $root "artifacts\publish\$rid\$exeName") (Join-Path $releaseDir $asset) -Force
-    Copy-Item (Join-Path $root "artifacts\publish\$rid\prompt.md") (Join-Path $releaseDir "prompt.md") -Force
 }
 
 Write-Host ""

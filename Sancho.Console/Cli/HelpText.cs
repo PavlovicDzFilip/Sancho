@@ -20,19 +20,16 @@ public static class HelpText
           sancho config set <key> <value> Persist one config key
 
         Options:
-          --dir <path>                    Working directory for the Claude session (this run only)
           --api-key <key>                 OpenAI API key (this run only; not persisted)
-          --prompt-file <path>            System prompt file (this run only)
           -h, --help                      Show this help
           -v, --version                   Show version
 
         Prompt:
-          .sancho.md in the target directory, else prompt.md next to sancho.exe
-          ('promptFilePath' in config overrides both).
+          .sancho.md in the current directory
 
         Config:
           File:  ~/.sancho/config.json    (SANCHO_CONFIG_DIR overrides the directory)
-          Keys:  apiKey, targetDirectory, promptFilePath
-          Precedence: defaults < config file < OPENAI_API_KEY env var < command-line flags
+          Key:   apiKey
+          Precedence: config file < OPENAI_API_KEY env var < --api-key flag
         """;
 }

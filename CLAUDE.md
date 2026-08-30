@@ -26,16 +26,16 @@
 - Pipeline: mic → Channel<byte[]> → transcription → Channel<string> → Claude CLI
 
 ## Configuration
-- File: `~/.sancho/config.json` (`SANCHO_CONFIG_DIR` env var overrides the directory). Keys: `apiKey`, `targetDirectory`, `promptFilePath`.
-- Precedence: defaults < config file < `OPENAI_API_KEY` env var < command-line flags. The `--api-key`/`--dir`/`--prompt-file` flags are one-off overrides and are never persisted; only `sancho config set` persists.
+- File: `~/.sancho/config.json` (`SANCHO_CONFIG_DIR` env var overrides the directory). Only key: `apiKey`.
+- Precedence: defaults < config file < `OPENAI_API_KEY` env var < `--api-key` flag. The flag is a one-off override and is never persisted; only `sancho config set` persists.
 - First run with no key anywhere prompts for it interactively and stores it in the config file.
-- System prompt resolution (in `ClaudeService`): an explicitly configured `promptFilePath` wins; otherwise `.sancho.md` in the target directory if present, else `prompt.md` next to the executable.
+- System prompt: `.sancho.md` in the current directory (the directory sancho is run from). No fallback — a missing file is a hard error.
 
 ## CLI Surface
 - `sancho` — start listening in the current directory
 - `sancho --continue` / `-c` — session picker, resumes a prior Claude session
 - `sancho config get [key]` / `sancho config set <key> <value>` — view/persist config
-- `sancho --help`, `sancho --version`, one-off `--dir`, `--api-key`, `--prompt-file`
+- `sancho --help`, `sancho --version`, one-off `--api-key`
 - Arg parsing is hand-rolled in `Cli\CliArgs.cs` — keep it that way: small, explicit surface, no reflection-based parsers. Usage errors exit 2.
 
 ## Publishing

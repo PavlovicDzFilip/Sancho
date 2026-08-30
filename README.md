@@ -36,11 +36,13 @@ sancho --help
 ## Configuration
 
 ```bash
-sancho config get [key]   # apiKey, targetDirectory, promptFilePath
+sancho config get [key]   # apiKey
 sancho config set apiKey sk-...
 ```
 
-Precedence: defaults < config file < `OPENAI_API_KEY` env var < command-line flags (`--api-key`, `--dir`, `--prompt-file`).
+The system prompt is read from `.sancho.md` in the directory you run Sancho from.
+
+Precedence: defaults < config file < `OPENAI_API_KEY` env var < `--api-key` flag.
 
 ## Building & Releasing
 
@@ -48,4 +50,4 @@ Requires the .NET 10 SDK.
 
 - `scripts/publish.ps1` (Windows) / `scripts/publish.sh` (macOS/Linux) build all platforms: `win-x64`, `linux-x64`, `linux-arm64`, `osx-arm64`, `osx-x64`.
 - Output: `artifacts/publish/<platform>/`, with release-ready assets staged in `artifacts/release/`.
-- To release: create a GitHub release and attach everything from `artifacts/release/` (`sancho.exe`, `sancho-linux-x64`, `sancho-osx-arm64`, `prompt.md`, …). The installers download from `releases/latest/download`.
+- To release: create a GitHub release and attach everything from `artifacts/release/` (`sancho.exe`, `sancho-linux-x64`, `sancho-osx-arm64`, …). The installers download from `releases/latest/download`.

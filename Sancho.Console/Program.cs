@@ -101,14 +101,9 @@ if (string.IsNullOrWhiteSpace(apiKey))
     AnsiConsole.MarkupLine($"[grey]Stored in {SanchoPaths.ConfigFile}[/]");
 }
 
-var targetDir = ClaudeService.ResolveTargetDirectory(cliArgs.Dir ?? stored.TargetDirectory);
+var targetDir = Directory.GetCurrentDirectory();
 
 var transcriptionOptions = new TranscriptionOptions { ApiKey = apiKey };
-var claudeOptions = new ClaudeOptions
-{
-    TargetDirectory = targetDir,
-    PromptFilePath = cliArgs.PromptFile ?? stored.PromptFilePath ?? "",
-};
 
 // ── Composition root ──────────────────────────────────────────────
 var services = new ServiceCollection();
@@ -120,7 +115,6 @@ services.AddLogging(builder =>
 });
 services.AddSingleton<ConsoleFormatter, RawConsoleFormatter>();
 services.AddSingleton(transcriptionOptions);
-services.AddSingleton(claudeOptions);
 services.AddSingleton<Display>();
 services.AddSingleton<MicrophoneAudioSourceFactory>();
 services.AddSingleton<RealtimeTranscriptionService>();
@@ -133,7 +127,6 @@ var resumeSessionId = cliArgs.Continue ? ChooseSession(targetDir) : null;
 
 services.AddSingleton<ClaudeService>(sp =>
     new ClaudeService(
-        sp.GetRequiredService<ClaudeOptions>(),
         resumeSessionId,
         sp.GetRequiredService<ILogger<ClaudeService>>(),
         sp.GetRequiredService<SessionTitleService>()));

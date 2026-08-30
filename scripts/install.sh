@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs Sancho for all users on macOS or Linux:
 #   1. Installs the .NET 10 SDK if dotnet is not already present
-#   2. Downloads the latest sancho binary (and prompt.md) from GitHub releases
+#   2. Downloads the latest sancho binary from GitHub releases
 #   3. Installs it to /usr/local/bin, accessible to all users
 #
 # One-liner usage:
@@ -63,21 +63,9 @@ if ! curl -fsSL "$RELEASE_BASE/sancho-$os-$arch" -o "$binary"; then
     exit 1
 fi
 
-# prompt.md is optional; the app falls back to its built-in prompt.
-prompt_tmp=""
-if curl -fsSL "$RELEASE_BASE/prompt.md" -o "$binary.prompt"; then
-    prompt_tmp="$binary.prompt"
-else
-    echo "prompt.md not found in the release; sancho will use its built-in prompt."
-fi
-
 # ---- Install for all users --------------------------------------------------
-# The app resolves prompt.md next to the executable, so keep them together.
 install -m 0755 "$binary" /usr/local/bin/sancho
-if [ -n "$prompt_tmp" ]; then
-    install -m 0644 "$prompt_tmp" /usr/local/bin/prompt.md
-fi
-rm -f "$binary" "$prompt_tmp"
+rm -f "$binary"
 
 echo ""
 echo "Sancho installed to /usr/local/bin/sancho (available to all users)."

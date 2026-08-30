@@ -9,7 +9,7 @@ public sealed class ConfigException(string message) : Exception(message);
 public static class ConfigStore
 {
     /// <summary>Keys accepted by <c>sancho config get/set</c>.</summary>
-    public static readonly string[] KnownKeys = ["apiKey", "targetDirectory", "promptFilePath"];
+    public static readonly string[] KnownKeys = ["apiKey"];
 
     /// <summary>
     /// Loads the config file. A missing file yields defaults; malformed JSON
@@ -49,8 +49,6 @@ public static class ConfigStore
     public static SanchoConfig WithKey(SanchoConfig config, string key, string? value) => key switch
     {
         "apiKey" => config with { ApiKey = EmptyToNull(value) },
-        "targetDirectory" => config with { TargetDirectory = EmptyToNull(value) },
-        "promptFilePath" => config with { PromptFilePath = EmptyToNull(value) },
         _ => throw new ConfigException($"Unknown config key '{key}'. Valid keys: {string.Join(", ", KnownKeys)}."),
     };
 
@@ -58,8 +56,6 @@ public static class ConfigStore
     public static string? GetValue(SanchoConfig config, string key) => key switch
     {
         "apiKey" => config.ApiKey,
-        "targetDirectory" => config.TargetDirectory,
-        "promptFilePath" => config.PromptFilePath,
         _ => throw new ConfigException($"Unknown config key '{key}'. Valid keys: {string.Join(", ", KnownKeys)}."),
     };
 

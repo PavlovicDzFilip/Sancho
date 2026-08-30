@@ -6,9 +6,7 @@ public sealed class UsageError(string message) : Exception(message);
 /// <summary>Parsed command line for <c>sancho</c>.</summary>
 public sealed record CliArgs(
     bool Continue,
-    string? Dir,
     string? ApiKey,
-    string? PromptFile,
     string? Command,
     string[] CommandArgs,
     bool ShowHelp,
@@ -22,9 +20,7 @@ public sealed record CliArgs(
     public static CliArgs Parse(string[] args)
     {
         var continueSession = false;
-        string? dir = null;
         string? apiKey = null;
-        string? promptFile = null;
         var positional = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
@@ -33,9 +29,9 @@ public sealed record CliArgs(
             switch (arg)
             {
                 case "-h" or "--help":
-                    return new CliArgs(false, null, null, null, null, [], true, false);
+                    return new CliArgs(false, null, null, [], true, false);
                 case "-v" or "--version":
-                    return new CliArgs(false, null, null, null, null, [], false, true);
+                    return new CliArgs(false, null, null, [], false, true);
                 case "-c" or "--continue":
                     continueSession = true;
                     break;
@@ -52,14 +48,8 @@ public sealed record CliArgs(
 
                         switch (name)
                         {
-                            case "--dir" or "--target-directory":
-                                dir = value ?? throw new UsageError($"'{name}' requires a value.");
-                                break;
                             case "--api-key":
                                 apiKey = value ?? throw new UsageError("'--api-key' requires a value.");
-                                break;
-                            case "--prompt-file":
-                                promptFile = value ?? throw new UsageError("'--prompt-file' requires a value.");
                                 break;
                             default:
                                 throw new UsageError($"Unknown option '{name}'.");
@@ -77,11 +67,11 @@ public sealed record CliArgs(
         {
             if (positional[0] is not "config")
                 throw new UsageError($"Unknown command '{positional[0]}'.");
-            return new CliArgs(continueSession, dir, apiKey, promptFile,
+            return new CliArgs(continueSession, apiKey,
                 "config", positional.Skip(1).ToArray(), false, false);
         }
 
-        return new CliArgs(continueSession, dir, apiKey, promptFile, null, [], false, false);
+        return new CliArgs(continueSession, apiKey, null, [], false, false);
     }
 
     private static (string Name, string? Value) SplitFlag(string arg)

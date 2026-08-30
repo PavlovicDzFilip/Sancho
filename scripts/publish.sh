@@ -35,7 +35,6 @@ for rid in "${rids[@]}"; do
 
     rm -f "$root"/artifacts/publish/"$rid"/*.pdb
     cp "$root/artifacts/publish/$rid/$exe_name" "$release_dir/$(asset_name "$rid")"
-    cp "$root/artifacts/publish/$rid/prompt.md" "$release_dir/prompt.md"
 done
 
 echo ""

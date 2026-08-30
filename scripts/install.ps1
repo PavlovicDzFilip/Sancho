@@ -1,6 +1,6 @@
 # Installs Sancho for all users on a Windows machine:
 #   1. Installs the .NET 10 SDK if dotnet is not already present
-#   2. Downloads the latest sancho.exe (and prompt.md) from GitHub releases
+#   2. Downloads the latest sancho.exe from GitHub releases
 #   3. Copies it to %ProgramFiles%\Sancho and adds it to the machine PATH
 #
 # One-liner usage:
@@ -98,15 +98,6 @@ try {
           "Publish with scripts\publish.ps1 and attach artifacts\publish\win-x64\sancho.exe to a release."
 }
 
-$tmpPrompt = $null
-try {
-    $tmpPrompt = Join-Path $env:TEMP "sancho-prompt.md"
-    Invoke-WebRequest -UseBasicParsing "$ReleaseBase/prompt.md" -OutFile $tmpPrompt
-} catch {
-    Write-Warning "prompt.md not found in the release; sancho will use its built-in prompt."
-    $tmpPrompt = $null
-}
-
 # ---- Install for all users -------------------------------------------------
 $programFiles = $env:ProgramW6432
 if (-not $programFiles) { $programFiles = $env:ProgramFiles }
@@ -115,7 +106,6 @@ New-Item -ItemType Directory -Force $installDir | Out-Null
 
 try {
     Copy-Item $tmpExe (Join-Path $installDir "sancho.exe") -Force
-    if ($tmpPrompt) { Copy-Item $tmpPrompt (Join-Path $installDir "prompt.md") -Force }
 } catch {
     throw "Could not write to $installDir. Close any running sancho.exe and try again."
 }
@@ -127,7 +117,6 @@ if ($machinePath.Split(';') -notcontains $installDir) {
 }
 
 Remove-Item $tmpExe -ErrorAction SilentlyContinue
-if ($tmpPrompt) { Remove-Item $tmpPrompt -ErrorAction SilentlyContinue }
 
 Write-Host ""
 Write-Host "Sancho installed to $installDir and added to the machine PATH." -ForegroundColor Green

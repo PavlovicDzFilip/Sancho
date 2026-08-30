@@ -2,13 +2,13 @@
 
 ## Logging Rules
 - **Never use `Console.Write` or `Console.WriteLine` for output.** Always use `ILogger<T>` via dependency injection.
-- The project uses a custom `RawConsoleFormatter` (formatter name: `"raw"`) that outputs just the message with no prefix — ANSI escape codes in messages are preserved for colour.
+- The project uses a custom `RawConsoleFormatter` (`Logging\RawConsoleFormatter.cs`, formatter name `"raw"`) that outputs just the message with no prefix — ANSI escape codes in messages are preserved for colour.
 - Log levels:
   - `Information` — normal output (transcription text, Claude responses, tool status, startup/shutdown)
   - `Warning` — timeouts, unexpected process exits, claude stderr
   - `Error` — connection failures, process crashes
   - `Debug` — diagnostics hidden at default verbosity
-- The only exception to the no-Console rule is `Console.ReadKey` for user input and the interactive microphone selector in `MicrophoneAudioSource.cs` (which uses cursor positioning).
+- The only exceptions to the no-Console rule are `Console.ReadKey` for user input, the interactive microphone selector in `MicrophoneAudioSourceFactory.cs`, and `AnsiConsole` output from the CLI surface (`--help`, `--version`, `config get/set`, usage errors) which runs before the DI container exists.
 
 ## Cross-Platform Requirement
 - Everything added from now on must be cross-platform (Windows, macOS, Linux): code, scripts, tooling, installers.
@@ -17,11 +17,26 @@
 - Publishing targets all RIDs: `win-x64`, `linux-x64`, `linux-arm64`, `osx-arm64`, `osx-x64`. Release asset naming: `sancho.exe` (Windows), `sancho-<os>-<arch>` (others).
 
 ## Project Structure
-- .NET 10 console app (`Sancho.Console.csproj`)
+- .NET 10 console app (`Sancho.Console.csproj`, exe name `sancho`)
+- Entry point: `Program.cs` — CLI parsing (`Cli\CliArgs.cs`) and the early-exit commands (`--help`, `--version`, `config`) run before any services are built; the run path resolves config, then builds a plain `ServiceCollection` (no Generic Host, no ConfigurationBinder).
+- Config: `Config\SanchoPaths.cs` + `Config\ConfigStore.cs` — user config in `~/.sancho/config.json`, read via source-generated System.Text.Json (`SanchoConfigJsonContext`).
 - Audio capture: `IAudioSource` → `MicrophoneAudioSource` (NAudio)
 - Transcription: `RealtimeTranscriptionService` (OpenAI Realtime WebSocket)
 - Claude integration: `ClaudeService` (subprocess via `claude --print --input-format stream-json --output-format stream-json`)
 - Pipeline: mic → Channel<byte[]> → transcription → Channel<string> → Claude CLI
+
+## Configuration
+- File: `~/.sancho/config.json` (`SANCHO_CONFIG_DIR` env var overrides the directory). Keys: `apiKey`, `targetDirectory`, `promptFilePath`.
+- Precedence: defaults < config file < `OPENAI_API_KEY` env var < command-line flags. The `--api-key`/`--dir`/`--prompt-file` flags are one-off overrides and are never persisted; only `sancho config set` persists.
+- First run with no key anywhere prompts for it interactively and stores it in the config file.
+- System prompt resolution (in `ClaudeService`): an explicitly configured `promptFilePath` wins; otherwise `.sancho.md` in the target directory if present, else `prompt.md` next to the executable.
+
+## CLI Surface
+- `sancho` — start listening in the current directory
+- `sancho --continue` / `-c` — session picker, resumes a prior Claude session
+- `sancho config get [key]` / `sancho config set <key> <value>` — view/persist config
+- `sancho --help`, `sancho --version`, one-off `--dir`, `--api-key`, `--prompt-file`
+- Arg parsing is hand-rolled in `Cli\CliArgs.cs` — keep it that way: small, explicit surface, no reflection-based parsers. Usage errors exit 2.
 
 ## Publishing
 - `scripts\publish.ps1` (Windows) and `scripts\publish.sh` (macOS/Linux) publish framework-dependent single-file builds for all RIDs: `win-x64`, `linux-x64`, `linux-arm64`, `osx-arm64`, `osx-x64` (`artifacts/` is gitignored).
@@ -30,10 +45,9 @@
 - No AOT, no native toolchain required. `InvariantGlobalization=true` stays (safe: the app is English-only).
 
 ## Build Convention (Dogfooding)
-Sancho.exe is locked while running. To verify compilation without stopping:
+`sancho.exe` is locked while running. To verify compilation without stopping:
 ```
 dotnet build -o bin/staging
 ```
 `bin/` is gitignored so staging builds won't be tracked. Restart Sancho from
 staging when ready to test the new build.
-

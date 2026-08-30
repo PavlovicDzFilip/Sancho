@@ -1,14 +1,54 @@
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging.Console;
 using Sancho.Console;
 using Sancho.Console.Audio;
+using Sancho.Console.Cli;
+using Sancho.Console.Config;
+using Sancho.Console.Logging;
 using Sancho.Console.Orchestration;
 using Sancho.Console.Services;
 using Sancho.Console.Transcription;
 using Spectre.Console;
 // Display is in the root namespace
+
+// ── CLI surface: help, version, and config don't need any services ──
+CliArgs cliArgs;
+try
+{
+    cliArgs = CliArgs.Parse(args);
+}
+catch (UsageError ex)
+{
+    AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
+    AnsiConsole.MarkupLine("[grey]Run 'sancho --help' for usage.[/]");
+    return 2;
+}
+
+if (cliArgs.ShowHelp)
+{
+    AnsiConsole.Markup(HelpText.Body);
+    return 0;
+}
+
+if (cliArgs.ShowVersion)
+{
+    AnsiConsole.MarkupLine(HelpText.Version);
+    return 0;
+}
+
+if (cliArgs.Command is "config")
+{
+    try
+    {
+        return ConfigCommand.Handle(cliArgs.CommandArgs);
+    }
+    catch (Exception ex) when (ex is UsageError or ConfigException)
+    {
+        AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
+        return 2;
+    }
+}
 
 static string? ChooseSession(string targetDirectory)
 {
@@ -40,45 +80,69 @@ static string? ChooseSession(string targetDirectory)
 // ── Verify prerequisites ──────────────────────────────────────────
 ClaudeService.VerifyClaudeAvailable();
 
-var continueSession = args.Contains("--continue") || args.Contains("-c");
+// ── Resolve configuration (defaults < ~/.sancho/config.json < env < flags) ──
+var stored = ConfigStore.Load();
 
-var builder = Host.CreateApplicationBuilder(args);
+var apiKey = cliArgs.ApiKey
+    ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY")
+    ?? stored.ApiKey;
 
-builder.Logging.ClearProviders();
-builder.Logging.AddConsole(options => options.FormatterName = "raw");
-builder.Logging.SetMinimumLevel(LogLevel.Information);
+if (string.IsNullOrWhiteSpace(apiKey))
+{
+    // First run: ask once, store it, and reuse it from ~/.sancho/config.json.
+    apiKey = AnsiConsole.Prompt(
+        new TextPrompt<string>("OpenAI API key not found — enter it now (https://platform.openai.com/api-keys):")
+            .Secret()
+            .Validate(value => string.IsNullOrWhiteSpace(value)
+                ? ValidationResult.Error("API key cannot be empty.")
+                : ValidationResult.Success()));
 
-builder.Services.AddOptions<TranscriptionOptions>()
-    .Bind(builder.Configuration.GetSection("Transcription"))
-    .Validate(opt => !string.IsNullOrWhiteSpace(opt.ApiKey),
-        "OpenAI API key is required. Set 'Transcription:ApiKey' in appsettings.json.")
-    .ValidateOnStart();
+    ConfigStore.Save(ConfigStore.WithKey(stored, "apiKey", apiKey));
+    AnsiConsole.MarkupLine($"[grey]Stored in {SanchoPaths.ConfigFile}[/]");
+}
 
-builder.Services.AddOptions<ClaudeOptions>()
-    .Bind(builder.Configuration.GetSection("Claude"));
+var targetDir = ClaudeService.ResolveTargetDirectory(cliArgs.Dir ?? stored.TargetDirectory);
 
-builder.Services.AddSingleton<Display>();
-builder.Services.AddSingleton<MicrophoneAudioSourceFactory>();
-builder.Services.AddSingleton<RealtimeTranscriptionService>();
-builder.Services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromSeconds(45) });
-builder.Services.AddSingleton<SessionTitleService>();
+var transcriptionOptions = new TranscriptionOptions { ApiKey = apiKey };
+var claudeOptions = new ClaudeOptions
+{
+    TargetDirectory = targetDir,
+    PromptFilePath = cliArgs.PromptFile ?? stored.PromptFilePath ?? "",
+};
 
-var targetDir = ClaudeService.ResolveTargetDirectory(builder.Configuration["Claude:TargetDirectory"]);
-var resumeSessionId = continueSession ? ChooseSession(targetDir) : null;
+// ── Composition root ──────────────────────────────────────────────
+var services = new ServiceCollection();
+services.AddLogging(builder =>
+{
+    builder.ClearProviders();
+    builder.AddConsole(options => options.FormatterName = "raw");
+    builder.SetMinimumLevel(LogLevel.Information);
+});
+services.AddSingleton<ConsoleFormatter, RawConsoleFormatter>();
+services.AddSingleton(transcriptionOptions);
+services.AddSingleton(claudeOptions);
+services.AddSingleton<Display>();
+services.AddSingleton<MicrophoneAudioSourceFactory>();
+services.AddSingleton<RealtimeTranscriptionService>();
+services.AddSingleton<ITranscriptionService>(sp =>
+    sp.GetRequiredService<RealtimeTranscriptionService>());
+services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromSeconds(45) });
+services.AddSingleton<SessionTitleService>();
 
-builder.Services.Configure<ClaudeOptions>(o => o.TargetDirectory = targetDir);
-builder.Services.AddSingleton<ClaudeService>(sp =>
+var resumeSessionId = cliArgs.Continue ? ChooseSession(targetDir) : null;
+
+services.AddSingleton<ClaudeService>(sp =>
     new ClaudeService(
-        sp.GetRequiredService<IOptions<ClaudeOptions>>(),
+        sp.GetRequiredService<ClaudeOptions>(),
         resumeSessionId,
         sp.GetRequiredService<ILogger<ClaudeService>>(),
         sp.GetRequiredService<SessionTitleService>()));
-builder.Services.AddSingleton<Orchestrator>();
+services.AddSingleton<Orchestrator>();
 
-var host = builder.Build();
+using var provider = services.BuildServiceProvider();
 
 using var cts = new CancellationTokenSource();
-var orchestrator = host.Services.GetRequiredService<Orchestrator>();
+var orchestrator = provider.GetRequiredService<Orchestrator>();
 
 await orchestrator.RunAsync(cts.Token);
 

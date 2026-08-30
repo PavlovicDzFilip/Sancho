@@ -2,9 +2,9 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace Sancho.Console.Services;
 
@@ -22,10 +22,6 @@ public sealed class ClaudeService
     private readonly ILogger<ClaudeService> _logger;
     private readonly SessionTitleService _titleService;
     private readonly Channel<string> _input = Channel.CreateUnbounded<string>();
-    private readonly JsonSerializerOptions _jsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
-    };
 
     private Process? _process;
     private StreamWriter? _stdin;
@@ -37,29 +33,31 @@ public sealed class ClaudeService
     private int _titleRequested;
 
     public ClaudeService(
-        IOptions<ClaudeOptions> options,
+        ClaudeOptions options,
         string? resumeSessionId,
         ILogger<ClaudeService> logger,
         SessionTitleService titleService)
     {
-        var o = options.Value;
-        _targetDirectory = o.TargetDirectory;
+        _targetDirectory = options.TargetDirectory;
+        _logger = logger;
 
-        var promptPath = Path.IsPathRooted(o.PromptFilePath)
-            ? o.PromptFilePath
-            : Path.Combine(AppContext.BaseDirectory, o.PromptFilePath);
+        var (promptPath, isDefaultFallback) = ResolvePromptPath(options.PromptFilePath, _targetDirectory);
 
         if (!File.Exists(promptPath))
             throw new FileNotFoundException(
                 $"System prompt file not found at '{promptPath}'. " +
-                "Create a prompt.md file in the application directory, " +
-                "or set Claude:PromptFilePath in appsettings.json.");
+                "Add a .sancho.md file to the target directory, place a prompt.md next to sancho.exe, " +
+                "or set 'promptFilePath' with 'sancho config set'.");
 
         _systemPrompt = File.ReadAllText(promptPath).Trim();
         _resumeSessionId = resumeSessionId;
-        _logger = logger;
         _titleService = titleService;
         _sessionId = resumeSessionId ?? Guid.NewGuid().ToString("D");
+
+        if (isDefaultFallback)
+            _logger.LogInformation(
+                "No .sancho.md found in '{Directory}' — using the default prompt.md next to sancho.exe.",
+                _targetDirectory);
     }
 
     // ── Public API ─────────────────────────────────────────────────
@@ -85,6 +83,26 @@ public sealed class ClaudeService
     /// <summary>Resolves the configured target directory to an absolute path.</summary>
     public static string ResolveTargetDirectory(string? configured) =>
         Path.GetFullPath(string.IsNullOrWhiteSpace(configured) ? Environment.CurrentDirectory : configured);
+
+    /// <summary>
+    /// Resolves the system prompt: an explicitly configured path wins;
+    /// otherwise <c>.sancho.md</c> in the target directory, falling back to
+    /// <c>prompt.md</c> next to the executable. The flag reports whether the
+    /// default fallback was used.
+    /// </summary>
+    private static (string Path, bool IsDefaultFallback) ResolvePromptPath(
+        string? configured, string targetDirectory)
+    {
+        if (!string.IsNullOrWhiteSpace(configured))
+            return (Path.IsPathRooted(configured)
+                ? configured
+                : Path.Combine(AppContext.BaseDirectory, configured), false);
+
+        var projectPrompt = Path.Combine(targetDirectory, ".sancho.md");
+        return File.Exists(projectPrompt)
+            ? (projectPrompt, false)
+            : (Path.Combine(AppContext.BaseDirectory, "prompt.md"), true);
+    }
 
     /// <summary>Lists stored sessions for a target directory, newest first.</summary>
     public static IReadOnlyList<SessionSummary> ListSessions(string targetDirectory)
@@ -406,11 +424,11 @@ public sealed class ClaudeService
                 var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 _turnComplete = tcs;
 
-                var json = JsonSerializer.Serialize(new
+                var json = new JsonObject
                 {
-                    type = "user",
-                    message = new { role = "user", content = sentence }
-                }, _jsonOptions);
+                    ["type"] = "user",
+                    ["message"] = new JsonObject { ["role"] = "user", ["content"] = sentence }
+                }.ToJsonString();
 
                 await _stdin!.WriteLineAsync(json);
                 writer.TryWrite(ClaudeEvent.TurnStart.Instance);

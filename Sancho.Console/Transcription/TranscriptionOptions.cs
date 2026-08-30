@@ -1,13 +1,12 @@
 namespace Sancho.Console.Transcription;
 
 /// <summary>
-/// Configuration for the OpenAI Realtime transcription service.
-/// Bound from environment variables via <see cref="Microsoft.Extensions.Options.IOptions{T}"/>.
+/// Configuration for transcription. Resolved in precedence order from the
+/// <c>--api-key</c> flag, the <c>OPENAI_API_KEY</c> environment variable,
+/// or <c>~/.sancho/config.json</c>.
 /// </summary>
 public sealed class TranscriptionOptions
 {
-    /// <summary>
-    /// OpenAI API key. Set via the <c>OPENAI_API_KEY</c> environment variable.
-    /// </summary>
+    /// <summary>OpenAI API key.</summary>
     public string ApiKey { get; set; } = "";
 }

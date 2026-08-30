@@ -12,8 +12,9 @@ public sealed class ClaudeOptions
     public string TargetDirectory { get; set; } = "";
 
     /// <summary>
-    /// Path to a markdown file containing the system prompt.
-    /// Relative paths resolve against the application base directory.
+    /// System prompt file. Empty means "auto": <c>.sancho.md</c> in the target
+    /// directory if present, else <c>prompt.md</c> next to the executable.
+    /// Relative paths resolve against the executable's directory.
     /// </summary>
-    public string PromptFilePath { get; set; } = "prompt.md";
+    public string PromptFilePath { get; set; } = "";
 }

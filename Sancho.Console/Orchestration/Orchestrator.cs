@@ -128,6 +128,14 @@ public sealed class Orchestrator(
                     case ClaudeEvent.TurnComplete:
                         break;
 
+                    case ClaudeEvent.Status(var msg, _) when msg.StartsWith(
+                        "[claude-code:unrecognized_model]", StringComparison.Ordinal):
+                        // Claude Code's model-registry warning when a third-party backend
+                        // model id (e.g. DeepSeek) is configured — benign, keep it out of
+                        // the transcript but still available at Debug verbosity.
+                        logger.LogDebug("Ignored claude stderr diagnostic: {Msg}", msg);
+                        break;
+
                     case ClaudeEvent.Status(var msg, _):
                         display.History.AppendLine(msg);
                         break;

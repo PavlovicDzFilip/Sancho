@@ -90,6 +90,9 @@ public sealed class Display : IDisposable
         private readonly Display _display;
         private string? _statusText;
         private HistoryColor? _statusColor;
+        private string[] _lastFrame = new string[TranscriptRows];
+        private int _lastWidth;
+        private int _lastHeight;
 
         internal TranscriptPanel(Display display) => _display = display;
 
@@ -97,9 +100,20 @@ public sealed class Display : IDisposable
         {
             lock (_display._renderLock)
             {
-                var (left, top) = System.Console.GetCursorPosition();
                 var total = System.Console.WindowHeight;
                 var width = System.Console.WindowWidth;
+                var startRow = Math.Max(0, total - TranscriptRows);
+
+                // Only re-apply the scroll region when the terminal was resized.
+                var sizeChanged = total != _lastHeight || width != _lastWidth;
+                if (sizeChanged)
+                {
+                    _lastHeight = total;
+                    _lastWidth = width;
+                    _display.RefreshScrollRegion();
+                }
+
+                var (left, top) = System.Console.GetCursorPosition();
 
                 // Build wrapped content lines
                 var lines = new List<string>();
@@ -112,27 +126,36 @@ public sealed class Display : IDisposable
                 const int maxContentRows = TranscriptRows - 1; // 4
                 var contentRows = Math.Min(lines.Count, maxContentRows);
 
-                var startRow = Math.Max(0, total - TranscriptRows);
+                // Assemble the full frame: separator row + content rows bottom-up.
+                var frame = new string[TranscriptRows];
+                frame[0] = BuildSeparatorText(width);
+                for (var k = 0; k < contentRows; k++)
+                    frame[TranscriptRows - 1 - k] = lines[lines.Count - contentRows + k];
 
-                // Re-apply scroll region (handles terminal resize)
-                _display.RefreshScrollRegion();
-
-                // Clear the entire transcript area
-                for (var i = 0; i < TranscriptRows; i++)
+                // Clear the whole transcript area on resize (rows may have moved).
+                if (sizeChanged)
                 {
-                    System.Console.SetCursorPosition(0, startRow + i);
-                    System.Console.Write(new string(' ', width));
+                    for (var i = 0; i < TranscriptRows; i++)
+                    {
+                        System.Console.SetCursorPosition(0, startRow + i);
+                        System.Console.Write(new string(' ', width));
+                    }
                 }
 
-                // Separator (shows the connection status when set)
-                DrawSeparator();
-
-                // Content (bottom-up) — only the most recent lines fit
-                var row = startRow + TranscriptRows - 1;
-                for (var i = contentRows - 1; i >= 0; i--, row--)
+                // Write only the rows that changed since the last frame —
+                // avoids a full redraw (and the flicker that comes with it)
+                // on every transcription delta.
+                for (var i = 0; i < TranscriptRows; i++)
                 {
-                    System.Console.SetCursorPosition(0, row);
-                    System.Console.Write(lines[lines.Count - contentRows + i]);
+                    var text = frame[i] ?? "";
+                    if (sizeChanged || _lastFrame[i] != text)
+                    {
+                        System.Console.SetCursorPosition(0, startRow + i);
+                        System.Console.Write(new string(' ', width));
+                        System.Console.SetCursorPosition(0, startRow + i);
+                        System.Console.Write(text);
+                        _lastFrame[i] = text;
+                    }
                 }
 
                 // Restore cursor
@@ -159,23 +182,27 @@ public sealed class Display : IDisposable
             var startRow = Math.Max(0, total - TranscriptRows);
             var (left, top) = System.Console.GetCursorPosition();
 
+            var text = BuildSeparatorText(width);
             System.Console.SetCursorPosition(0, startRow);
+            System.Console.Write(new string(' ', width));
+            System.Console.SetCursorPosition(0, startRow);
+            System.Console.Write(text);
+            System.Console.SetCursorPosition(left, top);
 
+            // Keep the frame cache in sync so Set() doesn't redraw it twice.
+            _lastFrame[0] = text;
+        }
+
+        /// <summary>Builds the separator row text, with the status centered when set.</summary>
+        private string BuildSeparatorText(int width)
+        {
             var label = _statusText is null ? "" : $" {_statusText} ";
             if (label.Length == 0)
-            {
-                System.Console.Write(new string('─', width));
-            }
-            else
-            {
-                var leftWidth = Math.Max(0, (width - label.Length) / 2);
-                var rightWidth = Math.Max(0, width - leftWidth - label.Length);
-                System.Console.Write(new string('─', leftWidth));
-                System.Console.Write(FormatLine(label, _statusColor!));
-                System.Console.Write(new string('─', rightWidth));
-            }
+                return new string('─', width);
 
-            System.Console.SetCursorPosition(left, top);
+            var leftWidth = Math.Max(0, (width - label.Length) / 2);
+            var rightWidth = Math.Max(0, width - leftWidth - label.Length);
+            return new string('─', leftWidth) + FormatLine(label, _statusColor!) + new string('─', rightWidth);
         }
 
         public void Clear()

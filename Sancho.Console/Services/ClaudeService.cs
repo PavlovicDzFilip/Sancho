@@ -40,13 +40,7 @@ public sealed class ClaudeService
         _targetDirectory = Directory.GetCurrentDirectory();
         _logger = logger;
 
-        var promptPath = Path.Combine(_targetDirectory, ".sancho.md");
-
-        if (!File.Exists(promptPath))
-            throw new FileNotFoundException(
-                $"System prompt file not found at '{promptPath}'. " +
-                "Create a .sancho.md file in the current directory and try again.");
-
+        var promptPath = EnsureSystemPrompt(_targetDirectory).Path;
         _systemPrompt = File.ReadAllText(promptPath).Trim();
         _resumeSessionId = resumeSessionId;
         _titleService = titleService;
@@ -250,6 +244,37 @@ public sealed class ClaudeService
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>Default prompt written to <c>.sancho.md</c> when it is missing.</summary>
+    public const string DefaultSystemPrompt =
+        """
+        # Sancho Assistant
+
+        You are a live assistant listening to someone speak. You receive transcribed sentences in realtime as they become available.
+
+        ## Guidelines
+
+        - **Be brief.** Respond only when action is needed or a question is asked. Don't respond to every sentence.
+        - **Acknowledge.** Let the speaker know you heard them, but keep responses short and helpful.
+        - **Execute commands.** When asked to run a command, use the Bash tool and report results clearly.
+
+        """;
+
+    /// <summary>
+    /// Returns the <c>.sancho.md</c> path for the given directory, creating the
+    /// file with <see cref="DefaultSystemPrompt"/> when it is missing. The
+    /// <c>Created</c> flag lets callers tell the user the file is new.
+    /// </summary>
+    public static (string Path, bool Created) EnsureSystemPrompt(string targetDirectory)
+    {
+        var promptPath = Path.Combine(targetDirectory, ".sancho.md");
+
+        if (File.Exists(promptPath))
+            return (promptPath, false);
+
+        File.WriteAllText(promptPath, DefaultSystemPrompt);
+        return (promptPath, true);
     }
 
     public static void VerifyClaudeAvailable()

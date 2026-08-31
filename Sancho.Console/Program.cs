@@ -78,7 +78,30 @@ static string? ChooseSession(string targetDirectory)
 }
 
 // ── Verify prerequisites ──────────────────────────────────────────
-ClaudeService.VerifyClaudeAvailable();
+try
+{
+    ClaudeService.VerifyClaudeAvailable();
+}
+catch (InvalidOperationException ex)
+{
+    AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
+    return 2;
+}
+
+var targetDir = Directory.GetCurrentDirectory();
+
+try
+{
+    var (promptPath, promptCreated) = ClaudeService.EnsureSystemPrompt(targetDir);
+    if (promptCreated)
+        AnsiConsole.MarkupLine(
+            $"[grey]Created {Path.GetFileName(promptPath)} with the default system prompt — edit it to customize.[/]");
+}
+catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+{
+    AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
+    return 2;
+}
 
 // ── Resolve configuration (defaults < ~/.sancho/config.json < env < flags) ──
 var stored = ConfigStore.Load();
@@ -100,8 +123,6 @@ if (string.IsNullOrWhiteSpace(apiKey))
     ConfigStore.Save(ConfigStore.WithKey(stored, "apiKey", apiKey));
     AnsiConsole.MarkupLine($"[grey]Stored in {SanchoPaths.ConfigFile}[/]");
 }
-
-var targetDir = Directory.GetCurrentDirectory();
 
 var transcriptionOptions = new TranscriptionOptions { ApiKey = apiKey };
 

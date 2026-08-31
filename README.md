@@ -40,7 +40,7 @@ sancho config get [key]   # apiKey
 sancho config set apiKey sk-...
 ```
 
-The system prompt is read from `.sancho.md` in the directory you run Sancho from.
+The system prompt is read from `.sancho.md` in the directory you run Sancho from. If the file is missing, Sancho creates it with a default prompt and tells you — edit it to customize.
 
 Precedence: defaults < config file < `OPENAI_API_KEY` env var < `--api-key` flag.
 

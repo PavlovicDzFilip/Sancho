@@ -29,7 +29,7 @@
 - File: `~/.sancho/config.json` (`SANCHO_CONFIG_DIR` env var overrides the directory). Only key: `apiKey`.
 - Precedence: defaults < config file < `OPENAI_API_KEY` env var < `--api-key` flag. The flag is a one-off override and is never persisted; only `sancho config set` persists.
 - First run with no key anywhere prompts for it interactively and stores it in the config file.
-- System prompt: `.sancho.md` in the current directory (the directory sancho is run from). No fallback — a missing file is a hard error.
+- System prompt: `.sancho.md` in the current directory (the directory sancho is run from). If the file is missing, sancho creates it with a default prompt and prints a note that it can be edited.
 
 ## CLI Surface
 - `sancho` — start listening in the current directory

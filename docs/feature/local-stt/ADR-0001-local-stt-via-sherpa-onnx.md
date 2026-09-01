@@ -1,6 +1,6 @@
 # ADR-0001: Local speech-to-text via sherpa-onnx (streaming zipformer en, int8)
 
-- Status: accepted (implemented 2026-09-01, spike-validated on Linux x64)
+- Status: superseded by ADR-0002 (offline zipformer + silero VAD; ~12× less CPU, no streaming tax)
 - Feature: local-stt
 - Supersedes: the "interim" framing in `ideas/local-stt.md`
 

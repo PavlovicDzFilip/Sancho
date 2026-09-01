@@ -36,14 +36,14 @@ sancho --help
 
 ## Local mode
 
-`transcription: local` transcribes on-device with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (streaming zipformer, English, int8) — no network, no API key, and the audio never leaves your machine:
+`transcription: local` transcribes on-device with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (offline zipformer, English, int8, segmented by silero VAD) — no network, no API key, and the audio never leaves your machine:
 
 ```bash
 sancho config set transcription local    # persist the local backend
 sancho --transcription local             # one run only
 ```
 
-The first run downloads the speech model (~68 MB) into `~/.sancho/models/`. See `docs/feature/local-stt/` for how the engine was chosen.
+Utterances arrive when you stop speaking (~1 s after), not word-by-word. The first run downloads the speech model (~70 MB) into `~/.sancho/models/`. See `docs/feature/local-stt/` for how the engine was chosen.
 
 ## Recording mode
 

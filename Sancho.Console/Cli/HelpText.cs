@@ -30,7 +30,8 @@ public static class HelpText
 
         Local (--transcription local):
           On-device speech-to-text via sherpa-onnx — your voice never leaves the machine.
-          First run downloads the speech model (~68 MB) into ~/.sancho/models.
+          Utterances arrive when you stop speaking (~1 s after).
+          First run downloads the speech model (~70 MB) into ~/.sancho/models.
 
         Recording (--transcription record):
           Files: ~/.sancho/recordings     (WAV; SANCHO_CONFIG_DIR overrides the directory)

@@ -4,32 +4,38 @@ using Sancho.Console.Config;
 namespace Sancho.Console.Transcription;
 
 /// <summary>
-/// Downloads the local speech-to-text model files (sherpa-onnx streaming
-/// zipformer, English, int8) into <c>~/.sancho/models/</c> on first use.
-/// Files already on disk are reused; downloads land in <c>.part</c> files
-/// and are moved into place only when complete, so an interrupted download
-/// never leaves a half-written model behind.
+/// Downloads the local speech-to-text model files (sherpa-onnx offline
+/// zipformer English int8 + silero VAD) into <c>~/.sancho/models/</c> on
+/// first use. Files already on disk are reused; downloads land in
+/// <c>.part</c> files and are moved into place only when complete, so an
+/// interrupted download never leaves a half-written model behind.
 /// </summary>
 public sealed class LocalSttModels(ILogger<LocalSttModels> logger)
 {
-    public const string ModelDirName = "sherpa-onnx-streaming-zipformer-en-2023-06-26";
+    public const string ModelDirName = "sherpa-onnx-zipformer-en-2023-06-26";
 
     private const string BaseUrl =
-        "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main/";
+        "https://huggingface.co/csukuangfj/sherpa-onnx-zipformer-en-2023-06-26/resolve/main/";
 
-    // Dedicated client: the 67 MB encoder can exceed the app-wide 45 s
+    // The streaming model predates the offline engine (ADR-0002); its files
+    // are no longer read, so a completed download cleans the stale directory.
+    private const string SupersededModelDirName = "sherpa-onnx-streaming-zipformer-en-2023-06-26";
+
+    // Dedicated client: the 66 MB encoder can exceed the app-wide 45 s
     // HttpClient timeout on slow connections, so downloads get their own.
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(30) };
 
     private static readonly (string File, string Url)[] Files =
     [
-        ("encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-         BaseUrl + "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx"),
-        ("decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-         BaseUrl + "decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx"),
-        ("joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-         BaseUrl + "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx"),
+        ("encoder-epoch-99-avg-1.int8.onnx",
+         BaseUrl + "encoder-epoch-99-avg-1.int8.onnx"),
+        ("decoder-epoch-99-avg-1.int8.onnx",
+         BaseUrl + "decoder-epoch-99-avg-1.int8.onnx"),
+        ("joiner-epoch-99-avg-1.int8.onnx",
+         BaseUrl + "joiner-epoch-99-avg-1.int8.onnx"),
         ("tokens.txt", BaseUrl + "tokens.txt"),
+        ("silero_vad.onnx",
+         "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"),
     ];
 
     /// <summary>
@@ -68,7 +74,23 @@ public sealed class LocalSttModels(ILogger<LocalSttModels> logger)
             }
         }
 
+        TryDeleteSupersededModel();
         return dir;
+    }
+
+    /// <summary>Removes the superseded streaming-model directory, if present.</summary>
+    private static void TryDeleteSupersededModel()
+    {
+        try
+        {
+            var old = Path.Combine(SanchoPaths.ModelsDir, SupersededModelDirName);
+            if (Directory.Exists(old))
+                Directory.Delete(old, recursive: true);
+        }
+        catch (IOException)
+        {
+            // best effort — a stale directory is harmless, just disk space
+        }
     }
 
     private static void TryDelete(string path)

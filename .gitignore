@@ -4,4 +4,5 @@ artifacts/
 /packages/
 riderModule.iml
 /_ReSharper.Caches/
-*.DotSettings.user.sancho.md
+*.DotSettings.user
+.sancho.md

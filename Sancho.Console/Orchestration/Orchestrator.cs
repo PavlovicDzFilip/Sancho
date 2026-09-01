@@ -7,8 +7,9 @@ using Sancho.Console.Transcription;
 namespace Sancho.Console.Orchestration;
 
 public sealed class Orchestrator(
-    MicrophoneAudioSourceFactory audioSourceFactory,
+    AudioSourceFactory audioSourceFactory,
     ITranscriptionService transcriptionService,
+    TranscriptionOptions transcriptionOptions,
     ClaudeService claudeService,
     Display display,
     ILogger<Orchestrator> logger)
@@ -16,7 +17,9 @@ public sealed class Orchestrator(
     // Most recent ~30 s of audio is kept in the channel: a disconnect outage
     // buffers recent speech for replay without growing memory forever.
     private const int BufferedAudioSeconds = 30;
-    private const int AudioChunkMilliseconds = 100; // matches MicrophoneAudioSource.BufferMilliseconds
+    private const int AudioChunkMilliseconds = 100; // matches the capture sources' chunk size
+
+    private bool RecordingMode => transcriptionOptions.Mode == TranscriptionOptions.Record;
 
     private readonly object _bufferLock = new();
     private readonly List<string> _buffer = new();
@@ -37,35 +40,79 @@ public sealed class Orchestrator(
             SingleReader = true,
         });
 
-        using var captureCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        // Separate from cts so a transcription failure can stop the mic
+        // independently, but linked to it so shutdown cancels capture too.
+        using var captureCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
         var captureTask = audioSource.CaptureAsync(channel.Writer, captureCts.Token);
         var claudeEvents = claudeService.RunAsync(cts.Token);
 
-        display.History.AppendLine("🎤 Live transcription + Claude assistant started.");
-        display.History.AppendLine("   Flags: --continue / -c   pick a previous session to resume");
-        display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
+        if (RecordingMode)
+        {
+            display.History.AppendLine("🎤 Listening — your voice is recorded locally as a WAV file.");
+            display.History.AppendLine("   Speech-to-text is not wired up yet, so Claude won't hear you.");
+            display.History.AppendLine("   Flags: --continue / -c   pick a previous session to resume");
+            display.History.AppendLine("   Press CTRL + C to stop and save the recording.");
+        }
+        else
+        {
+            display.History.AppendLine("🎤 Live transcription + Claude assistant started.");
+            display.History.AppendLine("   Flags: --continue / -c   pick a previous session to resume");
+            display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
+        }
 
         if (claudeService.ContinueSession)
             PrintContinuedSession();
 
         // Render the transcript panel immediately so the task area is visible on startup.
         display.Transcript.Clear();
-        display.Transcript.SetStatus("transcription: connecting…", Display.HistoryColor.Warn);
+        display.Transcript.SetStatus(
+            RecordingMode ? "recording: starting…" : "transcription: connecting…",
+            Display.HistoryColor.Warn);
 
         var claudeTask = ConsumeClaudeEventsAsync(claudeEvents, cts.Token);
         var transcribeTask = RunTranscriptionLoopAsync(
             channel.Reader.ReadAllAsync(cts.Token), captureCts, cts.Token);
 
-        ConsoleKeyInfo pressedKey;
-        bool shouldStop;
-        do
+        void OnCancelKeyPress(object? sender, System.ConsoleCancelEventArgs e)
         {
-            pressedKey = System.Console.ReadKey(intercept: true);
-            shouldStop = pressedKey.Key == ConsoleKey.C && (pressedKey.Modifiers & ConsoleModifiers.Control) > 0;
-        } while (!shouldStop);
+            // Unix delivers Ctrl+C as SIGINT rather than a ReadKey keystroke;
+            // cancel the run and let the graceful shutdown finalize the file.
+            e.Cancel = true;
+            cts.Cancel();
+        }
 
-        await cts.CancelAsync();
-        await Task.WhenAll(captureTask, transcribeTask, claudeTask);
+        System.Console.CancelKeyPress += OnCancelKeyPress;
+        try
+        {
+            // Windows delivers Ctrl+C as a ReadKey keystroke; Unix delivers it
+            // as SIGINT (CancelKeyPress). Either path cancels the run.
+            var keyTask = Task.Run(() =>
+            {
+                try
+                {
+                    while (true)
+                    {
+                        var key = System.Console.ReadKey(intercept: true);
+                        if (key.Key == ConsoleKey.C && (key.Modifiers & ConsoleModifiers.Control) > 0)
+                            return;
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    // stdin is redirected (no console) — only SIGINT can end the run now.
+                }
+            });
+
+            var cancelTask = Task.Delay(Timeout.Infinite, cts.Token);
+            await Task.WhenAny(keyTask, cancelTask);
+
+            await cts.CancelAsync();
+            await Task.WhenAll(captureTask, transcribeTask, claudeTask);
+        }
+        finally
+        {
+            System.Console.CancelKeyPress -= OnCancelKeyPress;
+        }
 
         display.History.AppendLine("✅ Done.");
     }
@@ -157,10 +204,20 @@ public sealed class Orchestrator(
     private async Task RunTranscriptionLoopAsync(
         IAsyncEnumerable<byte[]> audioInput, CancellationTokenSource captureCts, CancellationToken ct)
     {
-        await foreach (var evt in transcriptionService.TranscribeAsync(audioInput, ct))
+        // WithCancellation is required: the transcription services are async
+        // iterators with [EnumeratorCancellation], so their ct comes from here,
+        // not from the TranscribeAsync argument. Without it, a stalled receive
+        // (e.g. a silent server after a 401) can never be interrupted and
+        // Ctrl+C hangs in Task.WhenAll.
+        await foreach (var evt in transcriptionService.TranscribeAsync(audioInput, ct).WithCancellation(ct))
         {
             switch (evt)
             {
+                case TranscriptionEvent.Recording(var path):
+                    display.Transcript.SetStatus("● recording", Display.HistoryColor.Ok);
+                    display.History.AppendLine($"💾 Recording to {path}");
+                    break;
+
                 case TranscriptionEvent.Delta delta:
                     _currentDelta = (_currentDelta ?? "") + delta.Text;
                     UpdateTranscript();
@@ -193,9 +250,15 @@ public sealed class Orchestrator(
 
                 case TranscriptionEvent.Failed(var msg):
                     logger.LogError("Transcription failed: {Message}", msg);
-                    display.Transcript.SetStatus("transcription: failed", Display.HistoryColor.Error);
+                    display.Transcript.SetStatus(
+                        RecordingMode ? "recording: failed" : "transcription: failed",
+                        Display.HistoryColor.Error);
                     display.History.AppendLine($"🛑 {msg}", Display.HistoryColor.Error);
-                    display.History.AppendLine("   Transcription stopped — restart Sancho to resume.", Display.HistoryColor.Dim);
+                    display.History.AppendLine(
+                        RecordingMode
+                            ? "   Recording stopped — restart Sancho to resume."
+                            : "   Transcription stopped — restart Sancho to resume.",
+                        Display.HistoryColor.Dim);
                     captureCts.Cancel();
                     break;
             }

@@ -1,6 +1,6 @@
 # Sancho
 
-A live voice assistant for the terminal: microphone → OpenAI Realtime transcription → Claude CLI.
+A voice assistant for the terminal: microphone → transcription → Claude CLI. Local speech-to-text is the next milestone — until it lands, there is an interim `record` mode that saves your voice to a WAV file instead of sending it to OpenAI.
 
 ## Install
 
@@ -19,11 +19,12 @@ curl -fsSL https://raw.githubusercontent.com/PavlovicDzFilip/Sancho/master/scrip
 Both installers:
 
 - install the .NET 10 SDK only if `dotnet` is not already present,
+- install ffmpeg on macOS/Linux if missing (needed for microphone capture; Windows uses the bundled NAudio package and needs nothing extra),
 - download the latest build for your OS/architecture from GitHub releases,
 - install it for all users (`C:\Program Files\Sancho` on Windows, `/usr/local/bin` on macOS/Linux),
 - prompt for administrator/sudo rights.
 
-Requirements: the [Claude CLI](https://docs.anthropic.com/en/docs/claude-code/setup) and an OpenAI API key (Sancho prompts for one on first run and stores it in `~/.sancho/config.json`).
+Requirements: the [Claude CLI](https://docs.anthropic.com/en/docs/claude-code/setup), plus ffmpeg on macOS/Linux.
 
 ## Usage
 
@@ -32,6 +33,17 @@ sancho               # start listening in the current directory
 sancho --continue    # resume a previous session
 sancho --help
 ```
+
+## Recording mode
+
+By default Sancho transcribes with OpenAI Realtime. During the transition to local speech-to-text, `transcription: record` makes it save your microphone to a WAV file in `~/.sancho/recordings/` instead (`SANCHO_CONFIG_DIR` overrides the directory):
+
+```bash
+sancho config set transcription record   # persist the interim mode
+sancho --transcription record            # one run only
+```
+
+Stop with Ctrl+C to finalize the file. In record mode, Claude won't hear your voice.
 
 ## Configuration
 
@@ -42,7 +54,9 @@ sancho config set apiKey sk-...
 
 The system prompt is read from `.sancho.md` in the directory you run Sancho from. If the file is missing, Sancho creates it with a default prompt and tells you — edit it to customize.
 
-Precedence: defaults < config file < `OPENAI_API_KEY` env var < `--api-key` flag.
+Keys: `apiKey` (prompted on first run in `openai` mode) and `transcription` (`openai` | `record`, default `openai`).
+
+Precedence: defaults < config file < `OPENAI_API_KEY` env var < flags (`--api-key`, `--transcription`).
 
 ## Building & Releasing
 

@@ -22,6 +22,8 @@ public sealed class RealtimeTranscriptionService(TranscriptionOptions options)
     private const string CompletedEventType = "conversation.item.input_audio_transcription.completed";
     private const string ErrorEventType = "error";
     private const int MaxReconnectAttempts = 5;
+    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan CloseTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan[] BackoffDelays =
     [
         TimeSpan.FromSeconds(1),
@@ -64,7 +66,10 @@ public sealed class RealtimeTranscriptionService(TranscriptionOptions options)
             string? dropReason;
             try
             {
-                await ws.ConnectAsync(RealtimeUri, ct);
+                // A stalled connect (DNS hang, filtered network) must not block
+                // the retry loop or the shutdown: bound it and fall through to
+                // the normal reconnect handling.
+                await ws.ConnectAsync(RealtimeUri, ct).WaitAsync(ConnectTimeout, ct);
                 await ConfigureSessionAsync(ws, ct);
                 dropReason = null;
             }
@@ -135,7 +140,10 @@ public sealed class RealtimeTranscriptionService(TranscriptionOptions options)
                     {
                         try
                         {
-                            await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+                            // Bound the close handshake: a server that never
+                            // answers the close frame must not hang shutdown.
+                            await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None)
+                                .WaitAsync(CloseTimeout);
                         }
                         catch
                         {

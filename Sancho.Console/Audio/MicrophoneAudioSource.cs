@@ -5,8 +5,9 @@ using NAudio.Wave;
 namespace Sancho.Console.Audio;
 
 /// <summary>
-/// Captures audio from a microphone device using NAudio and writes
-/// it as 16-bit PCM chunks at 24000 Hz into a channel.
+/// Captures audio from a microphone device using NAudio (Windows only) and
+/// writes it as 16-bit PCM chunks at 24000 Hz into a channel. The writer is
+/// completed when capture ends, signalling downstream consumers to finalize.
 /// </summary>
 public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
 {
@@ -66,15 +67,14 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
         _waveIn.RecordingStopped += (_, e) =>
         {
             if (e.Exception is not null)
-            {
                 _logger.LogError(e.Exception, "Recording stopped with error");
-                tcs.TrySetException(e.Exception);
-            }
             else
-            {
                 _logger.LogDebug("Recording stopped");
-                tcs.TrySetResult();
-            }
+
+            // Complete the channel so downstream consumers (e.g. the recorder)
+            // finalize; the task itself reports errors only via the log.
+            writer.TryComplete();
+            tcs.TrySetResult();
         };
 
         // Stop recording when cancellation is requested

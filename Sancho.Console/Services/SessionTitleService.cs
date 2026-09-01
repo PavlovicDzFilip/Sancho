@@ -27,6 +27,14 @@ public sealed class SessionTitleService(
     /// </summary>
     public async Task<string?> GenerateTitleAsync(string? userText)
     {
+        if (string.IsNullOrWhiteSpace(_apiKey))
+        {
+            // No OpenAI key configured — recording is local, and titles are
+            // the only remaining OpenAI call, so skip them quietly.
+            logger.LogDebug("No OpenAI API key configured — skipping session title generation.");
+            return null;
+        }
+
         var prompt = BuildTitlePrompt(userText);
         if (prompt is null)
             return null;

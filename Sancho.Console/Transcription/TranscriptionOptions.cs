@@ -1,12 +1,17 @@
 namespace Sancho.Console.Transcription;
 
 /// <summary>
-/// Configuration for transcription. Resolved in precedence order from the
-/// <c>--api-key</c> flag, the <c>OPENAI_API_KEY</c> environment variable,
-/// or <c>~/.sancho/config.json</c>.
+/// Configuration for transcription, resolved in Program.cs with precedence
+/// flags &gt; env vars &gt; <c>~/.sancho/config.json</c> &gt; defaults.
 /// </summary>
 public sealed class TranscriptionOptions
 {
-    /// <summary>OpenAI API key.</summary>
+    public const string OpenAi = "openai";
+    public const string Record = "record";
+
+    /// <summary>OpenAI API key (needed in <c>openai</c> mode only).</summary>
     public string ApiKey { get; set; } = "";
+
+    /// <summary>Transcription backend: <see cref="OpenAi"/> (default) or <see cref="Record"/>.</summary>
+    public string Mode { get; set; } = OpenAi;
 }

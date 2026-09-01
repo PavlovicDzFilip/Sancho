@@ -7,6 +7,7 @@ public sealed class UsageError(string message) : Exception(message);
 public sealed record CliArgs(
     bool Continue,
     string? ApiKey,
+    string? Transcription,
     string? Command,
     string[] CommandArgs,
     bool ShowHelp,
@@ -21,6 +22,7 @@ public sealed record CliArgs(
     {
         var continueSession = false;
         string? apiKey = null;
+        string? transcription = null;
         var positional = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
@@ -29,9 +31,9 @@ public sealed record CliArgs(
             switch (arg)
             {
                 case "-h" or "--help":
-                    return new CliArgs(false, null, null, [], true, false);
+                    return new CliArgs(false, null, null, null, [], true, false);
                 case "-v" or "--version":
-                    return new CliArgs(false, null, null, [], false, true);
+                    return new CliArgs(false, null, null, null, [], false, true);
                 case "-c" or "--continue":
                     continueSession = true;
                     break;
@@ -51,6 +53,9 @@ public sealed record CliArgs(
                             case "--api-key":
                                 apiKey = value ?? throw new UsageError("'--api-key' requires a value.");
                                 break;
+                            case "--transcription":
+                                transcription = value ?? throw new UsageError("'--transcription' requires a value.");
+                                break;
                             default:
                                 throw new UsageError($"Unknown option '{name}'.");
                         }
@@ -67,11 +72,11 @@ public sealed record CliArgs(
         {
             if (positional[0] is not "config")
                 throw new UsageError($"Unknown command '{positional[0]}'.");
-            return new CliArgs(continueSession, apiKey,
+            return new CliArgs(continueSession, apiKey, transcription,
                 "config", positional.Skip(1).ToArray(), false, false);
         }
 
-        return new CliArgs(continueSession, apiKey, null, [], false, false);
+        return new CliArgs(continueSession, apiKey, transcription, null, [], false, false);
     }
 
     private static (string Name, string? Value) SplitFlag(string arg)

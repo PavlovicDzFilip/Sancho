@@ -64,6 +64,32 @@ public sealed class Display : IDisposable
         return $"{color.Ansi}{text}{HistoryColor.Default.Ansi}";
     }
 
+    /// <summary>
+    /// Remembers the cursor position for <see cref="RestoreCursorPosition"/>.
+    /// On Unix this uses the terminal-side ANSI save (<c>ESC 7</c>) instead of
+    /// <see cref="System.Console.GetCursorPosition"/>: the API version issues
+    /// a cursor-position query (<c>ESC[6n</c>) and reads the reply from stdin,
+    /// which races with the keyTask's <see cref="System.Console.ReadKey"/>
+    /// raw-mode reader and intermittently hangs the status draw.
+    /// </summary>
+    internal static (int Left, int Top) SaveCursorPosition()
+    {
+        if (OperatingSystem.IsWindows())
+            return System.Console.GetCursorPosition();
+
+        System.Console.Write("\e7"); // DECSC — the terminal remembers, we don't query
+        return default;
+    }
+
+    /// <summary>Returns the cursor to a position saved by <see cref="SaveCursorPosition"/>.</summary>
+    internal static void RestoreCursorPosition((int Left, int Top) pos)
+    {
+        if (OperatingSystem.IsWindows())
+            System.Console.SetCursorPosition(pos.Left, pos.Top);
+        else
+            System.Console.Write("\e8"); // DECRC
+    }
+
     // ── Nested panels ────────────────────────────────────────────
 
     /// <summary>Top panel — scrolls naturally.</summary>
@@ -113,7 +139,7 @@ public sealed class Display : IDisposable
                     _display.RefreshScrollRegion();
                 }
 
-                var (left, top) = System.Console.GetCursorPosition();
+                var (left, top) = SaveCursorPosition();
 
                 // Build wrapped content lines
                 var lines = new List<string>();
@@ -159,7 +185,7 @@ public sealed class Display : IDisposable
                 }
 
                 // Restore cursor
-                System.Console.SetCursorPosition(left, top);
+                RestoreCursorPosition((left, top));
             }
         }
 
@@ -180,14 +206,14 @@ public sealed class Display : IDisposable
             var total = System.Console.WindowHeight;
             var width = System.Console.WindowWidth;
             var startRow = Math.Max(0, total - TranscriptRows);
-            var (left, top) = System.Console.GetCursorPosition();
+            var (left, top) = SaveCursorPosition();
 
             var text = BuildSeparatorText(width);
             System.Console.SetCursorPosition(0, startRow);
             System.Console.Write(new string(' ', width));
             System.Console.SetCursorPosition(0, startRow);
             System.Console.Write(text);
-            System.Console.SetCursorPosition(left, top);
+            RestoreCursorPosition((left, top));
 
             // Keep the frame cache in sync so Set() doesn't redraw it twice.
             _lastFrame[0] = text;

@@ -88,6 +88,21 @@ catch (InvalidOperationException ex)
     return 2;
 }
 
+// ffmpeg is the capture backend on Linux/macOS; Windows uses the bundled
+// NAudio package and needs nothing beyond the .NET runtime.
+if (!OperatingSystem.IsWindows())
+{
+    try
+    {
+        FfmpegAudioSource.VerifyFfmpegAvailable();
+    }
+    catch (InvalidOperationException ex)
+    {
+        AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
+        return 2;
+    }
+}
+
 var targetDir = Directory.GetCurrentDirectory();
 
 try
@@ -106,13 +121,23 @@ catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 // ── Resolve configuration (defaults < ~/.sancho/config.json < env < flags) ──
 var stored = ConfigStore.Load();
 
+// Transcription backend: openai is the default; record writes a local WAV
+// instead of sending audio anywhere (the interim mode until local STT lands).
+var mode = (cliArgs.Transcription ?? stored.Transcription ?? TranscriptionOptions.OpenAi)
+    .ToLowerInvariant();
+if (mode is not (TranscriptionOptions.OpenAi or TranscriptionOptions.Record))
+{
+    AnsiConsole.MarkupLine($"[red]Unknown transcription mode '{mode}'. Use 'openai' or 'record'.[/]");
+    return 2;
+}
+
 var apiKey = cliArgs.ApiKey
     ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY")
     ?? stored.ApiKey;
 
-if (string.IsNullOrWhiteSpace(apiKey))
+if (mode == TranscriptionOptions.OpenAi && string.IsNullOrWhiteSpace(apiKey))
 {
-    // First run: ask once, store it, and reuse it from ~/.sancho/config.json.
+    // First run in openai mode: ask once, store it, and reuse it from ~/.sancho/config.json.
     apiKey = AnsiConsole.Prompt(
         new TextPrompt<string>("OpenAI API key not found — enter it now (https://platform.openai.com/api-keys):")
             .Secret()
@@ -124,7 +149,7 @@ if (string.IsNullOrWhiteSpace(apiKey))
     AnsiConsole.MarkupLine($"[grey]Stored in {SanchoPaths.ConfigFile}[/]");
 }
 
-var transcriptionOptions = new TranscriptionOptions { ApiKey = apiKey };
+var transcriptionOptions = new TranscriptionOptions { ApiKey = apiKey ?? "", Mode = mode };
 
 // ── Composition root ──────────────────────────────────────────────
 var services = new ServiceCollection();
@@ -137,10 +162,13 @@ services.AddLogging(builder =>
 services.AddSingleton<ConsoleFormatter, RawConsoleFormatter>();
 services.AddSingleton(transcriptionOptions);
 services.AddSingleton<Display>();
-services.AddSingleton<MicrophoneAudioSourceFactory>();
+services.AddSingleton<AudioSourceFactory>();
 services.AddSingleton<RealtimeTranscriptionService>();
+services.AddSingleton<RecordingTranscriptionService>();
 services.AddSingleton<ITranscriptionService>(sp =>
-    sp.GetRequiredService<RealtimeTranscriptionService>());
+    mode == TranscriptionOptions.Record
+        ? (ITranscriptionService)sp.GetRequiredService<RecordingTranscriptionService>()
+        : sp.GetRequiredService<RealtimeTranscriptionService>());
 services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromSeconds(45) });
 services.AddSingleton<SessionTitleService>();
 

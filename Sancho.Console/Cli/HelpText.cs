@@ -11,7 +11,7 @@ public static class HelpText
 
     /// <summary>Body shown by <c>--help</c>.</summary>
     public const string Body = """
-        Sancho — live voice assistant: microphone → transcription → Claude CLI.
+        Sancho — voice assistant: microphone → transcription → Claude CLI.
 
         Usage:
           sancho                          Start listening in the current directory
@@ -21,15 +21,21 @@ public static class HelpText
 
         Options:
           --api-key <key>                 OpenAI API key (this run only; not persisted)
+          --transcription <mode>          openai (default) or record — this run only, not persisted
           -h, --help                      Show this help
           -v, --version                   Show version
 
         Prompt:
           .sancho.md in the current directory
 
+        Recording (--transcription record):
+          Files: ~/.sancho/recordings     (WAV; SANCHO_CONFIG_DIR overrides the directory)
+          Local speech-to-text is coming — in record mode, Claude won't hear your voice.
+
         Config:
           File:  ~/.sancho/config.json    (SANCHO_CONFIG_DIR overrides the directory)
-          Key:   apiKey
+          Keys:  apiKey                   (prompted in openai mode; used for session titles)
+                 transcription            (openai | record; default: openai)
           Precedence: config file < OPENAI_API_KEY env var < --api-key flag
         """;
 }

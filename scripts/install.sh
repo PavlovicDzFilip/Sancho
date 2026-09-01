@@ -54,6 +54,36 @@ if ! command -v dotnet >/dev/null 2>&1; then
 fi
 echo "dotnet: $(dotnet --version)"
 
+# ---- Ensure ffmpeg is available (mic capture on all platforms) --------------
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    echo "ffmpeg not found - installing..."
+    if [ "$os" = "linux" ]; then
+        if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y ffmpeg
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y ffmpeg
+        elif command -v pacman >/dev/null 2>&1; then
+            pacman -Sy --noconfirm ffmpeg
+        elif command -v zypper >/dev/null 2>&1; then
+            zypper --non-interactive install ffmpeg
+        elif command -v apk >/dev/null 2>&1; then
+            apk add ffmpeg
+        else
+            echo "No supported package manager found. Install ffmpeg manually and re-run." >&2
+            exit 1
+        fi
+    else
+        # macOS
+        if command -v brew >/dev/null 2>&1; then
+            brew install ffmpeg
+        else
+            echo "Homebrew not found. Install ffmpeg manually and re-run." >&2
+            exit 1
+        fi
+    fi
+fi
+echo "ffmpeg: $(command -v ffmpeg)"
+
 # ---- Download the published executable --------------------------------------
 echo "Downloading sancho ($os-$arch)..."
 binary="$(mktemp "${TMPDIR:-/tmp}/sancho.XXXXXX")"

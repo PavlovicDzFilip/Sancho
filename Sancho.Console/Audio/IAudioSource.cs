@@ -14,5 +14,6 @@ public interface IAudioSource
     /// <param name="writer">The channel to write audio chunks into.</param>
     /// <param name="cancellationToken">Cancel to stop capture.</param>
     /// <returns>A task that completes when capture ends (via cancellation, error, or the source stopping naturally).</returns>
+    /// <remarks>The writer is completed when capture ends, signalling downstream consumers to finalize.</remarks>
     Task CaptureAsync(ChannelWriter<byte[]> writer, CancellationToken cancellationToken = default);
 }

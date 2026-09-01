@@ -21,21 +21,25 @@ public static class HelpText
 
         Options:
           --api-key <key>                 OpenAI API key (this run only; not persisted)
-          --transcription <mode>          openai (default) or record — this run only, not persisted
+          --transcription <mode>          openai (default), record or local — this run only, not persisted
           -h, --help                      Show this help
           -v, --version                   Show version
 
         Prompt:
           .sancho.md in the current directory
 
+        Local (--transcription local):
+          On-device speech-to-text via sherpa-onnx — your voice never leaves the machine.
+          First run downloads the speech model (~68 MB) into ~/.sancho/models.
+
         Recording (--transcription record):
           Files: ~/.sancho/recordings     (WAV; SANCHO_CONFIG_DIR overrides the directory)
-          Local speech-to-text is coming — in record mode, Claude won't hear your voice.
+          In record mode, Claude won't hear your voice.
 
         Config:
           File:  ~/.sancho/config.json    (SANCHO_CONFIG_DIR overrides the directory)
           Keys:  apiKey                   (prompted in openai mode; used for session titles)
-                 transcription            (openai | record; default: openai)
+                 transcription            (openai | record | local; default: openai)
           Precedence: config file < OPENAI_API_KEY env var < --api-key flag
         """;
 }

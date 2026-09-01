@@ -12,6 +12,7 @@
       <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
       <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.10" />
       <PackageReference Include="NAudio" Version="2.3.0" />
+      <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.5" />
       <PackageReference Include="Spectre.Console" Version="0.57.2" />
     </ItemGroup>
 

@@ -21,14 +21,14 @@
 - Entry point: `Program.cs` — CLI parsing (`Cli\CliArgs.cs`) and the early-exit commands (`--help`, `--version`, `config`) run before any services are built; the run path resolves config, then builds a plain `ServiceCollection` (no Generic Host, no ConfigurationBinder).
 - Config: `Config\SanchoPaths.cs` + `Config\ConfigStore.cs` — user config in `~/.sancho/config.json`, read via source-generated System.Text.Json (`SanchoConfigJsonContext`).
 - Audio capture: `IAudioSource` → `MicrophoneAudioSource` (NAudio, Windows) / `FfmpegAudioSource` (ffmpeg subprocess: avfoundation on macOS, pulse with ALSA fallback on Linux)
-- Transcription: two `ITranscriptionService` implementations selected by the `transcription` config key (`openai` is the default): `RealtimeTranscriptionService` (OpenAI Realtime WebSocket) and `RecordingTranscriptionService` (writes the PCM stream to a WAV in `~/.sancho/recordings/`, pure managed — the interim mode). Local STT will replace both on the same seam (see `ideas/local-stt.md`).
+- Transcription: three `ITranscriptionService` implementations selected by the `transcription` config key (`openai` is the default): `RealtimeTranscriptionService` (OpenAI Realtime WebSocket), `LocalTranscriptionService` (on-device sherpa-onnx streaming zipformer en int8; model files downloaded to `~/.sancho/models/` on first use; `LocalSttModels` handles provisioning), and `RecordingTranscriptionService` (writes the PCM stream to a WAV in `~/.sancho/recordings/`, pure managed). Engine choice: `docs/feature/local-stt/ADR-0001-local-stt-via-sherpa-onnx.md`.
 - Claude integration: `ClaudeService` (subprocess via `claude --print --input-format stream-json --output-format stream-json`)
-- Pipeline: mic → Channel<byte[]> → transcription (`openai` → Channel<string> → Claude CLI; `record` → WAV file)
+- Pipeline: mic → Channel<byte[]> → transcription (`openai`/`local` → Channel<string> → Claude CLI; `record` → WAV file)
 
 ## Configuration
-- File: `~/.sancho/config.json` (`SANCHO_CONFIG_DIR` env var overrides the directory). Keys: `apiKey`, `transcription` (`openai` | `record`; default `openai`).
+- File: `~/.sancho/config.json` (`SANCHO_CONFIG_DIR` env var overrides the directory). Keys: `apiKey`, `transcription` (`openai` | `record` | `local`; default `openai`).
 - Precedence: defaults < config file < env var < flags. Flags (`--api-key`, `--transcription`) are one-off overrides and are never persisted; only `sancho config set` persists.
-- In `openai` mode a missing key prompts for it interactively on first run and stores it. In `record` mode the key is only used for OpenAI-generated session titles.
+- In `openai` mode a missing key prompts for it interactively on first run and stores it. In `record`/`local` mode the key (if present) is only used for OpenAI-generated session titles.
 - System prompt: `.sancho.md` in the current directory (the directory sancho is run from). If the file is missing, sancho creates it with a default prompt and prints a note that it can be edited.
 
 ## CLI Surface

@@ -1,6 +1,6 @@
 # Sancho
 
-A voice assistant for the terminal: microphone → transcription → Claude CLI. Local speech-to-text is the next milestone — until it lands, there is an interim `record` mode that saves your voice to a WAV file instead of sending it to OpenAI.
+A voice assistant for the terminal: microphone → transcription → Claude CLI. Speech-to-text runs on-device in `local` mode (sherpa-onnx) — no cloud round-trip, your voice never leaves the machine. OpenAI Realtime remains the default backend, and `record` mode saves your voice to a WAV file without transcribing.
 
 ## Install
 
@@ -34,9 +34,20 @@ sancho --continue    # resume a previous session
 sancho --help
 ```
 
+## Local mode
+
+`transcription: local` transcribes on-device with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (streaming zipformer, English, int8) — no network, no API key, and the audio never leaves your machine:
+
+```bash
+sancho config set transcription local    # persist the local backend
+sancho --transcription local             # one run only
+```
+
+The first run downloads the speech model (~68 MB) into `~/.sancho/models/`. See `docs/feature/local-stt/` for how the engine was chosen.
+
 ## Recording mode
 
-By default Sancho transcribes with OpenAI Realtime. During the transition to local speech-to-text, `transcription: record` makes it save your microphone to a WAV file in `~/.sancho/recordings/` instead (`SANCHO_CONFIG_DIR` overrides the directory):
+`transcription: record` saves your microphone to a WAV file in `~/.sancho/recordings/` instead of transcribing (`SANCHO_CONFIG_DIR` overrides the directory):
 
 ```bash
 sancho config set transcription record   # persist the interim mode
@@ -54,7 +65,7 @@ sancho config set apiKey sk-...
 
 The system prompt is read from `.sancho.md` in the directory you run Sancho from. If the file is missing, Sancho creates it with a default prompt and tells you — edit it to customize.
 
-Keys: `apiKey` (prompted on first run in `openai` mode) and `transcription` (`openai` | `record`, default `openai`).
+Keys: `apiKey` (prompted on first run in `openai` mode) and `transcription` (`openai` | `record` | `local`, default `openai`).
 
 Precedence: defaults < config file < `OPENAI_API_KEY` env var < flags (`--api-key`, `--transcription`).
 

@@ -19,4 +19,7 @@ public static class SanchoPaths
 
     /// <summary>Directory where voice recordings are written.</summary>
     public static string RecordingsDir => Path.Combine(ConfigDir, "recordings");
+
+    /// <summary>Directory where local speech-to-text models are downloaded.</summary>
+    public static string ModelsDir => Path.Combine(ConfigDir, "models");
 }

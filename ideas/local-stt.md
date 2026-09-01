@@ -1,24 +1,46 @@
-# Local speech-to-text (planned)
+# Local speech-to-text
 
-Status: idea — both backends exist today (OpenAI Realtime as the default, local WAV recording via `transcription: record`); STT is the next step.
+Status: **implemented** (2026-09-01) — `transcription: local` ships on the
+`ITranscriptionService` seam. Engine choice, spike evidence, and trade-offs
+are locked in
+[ADR-0001](../docs/feature/local-stt/ADR-0001-local-stt-via-sherpa-onnx.md).
 
-## Goal
+## What landed
 
-Replace the cloud transcription that `RecordingTranscriptionService` stands in for with local STT, so voice reaches Claude without any OpenAI dependency.
+- `LocalTranscriptionService` — sherpa-onnx streaming zipformer (English,
+  int8) in-process via NuGet, live `Delta` events, utterance segmentation by
+  the engine's endpoint detection, `Completed` per utterance.
+- `LocalSttModels` — first-run download of the model files (~68 MB) into
+  `~/.sancho/models/`, atomic `.part` downloads, reuse on later runs.
+- `transcription: local` config key + `--transcription local` flag.
 
-## Seams already ready
+## Goal (original)
 
-- `ITranscriptionService` — `RecordingTranscriptionService` consumes the same PCM stream (24 kHz mono 16-bit, 100 ms chunks) a local STT engine needs. Swap or extend on this seam.
-- `TranscriptionEvent.Delta` / `Completed` and the Orchestrator handling for them are intact and unused — streaming local transcripts drop straight in.
-- The PCM channel writer is completed when capture ends, so an STT service can finalize on channel completion the way the recorder does.
+Replace the cloud transcription that `RecordingTranscriptionService` stood in
+for with local STT, so voice reaches Claude without any OpenAI dependency.
 
-## Candidates
+## Seams (all used)
 
-- whisper.cpp / faster-whisper — small models, CPU-friendly, subprocess like ffmpeg (fits the codebase style).
-- sherpa-onnx — streaming, low latency, includes its own VAD.
+- `ITranscriptionService` — same PCM stream (24 kHz mono 16-bit, 100 ms
+  chunks); the engine resamples to 16 kHz internally.
+- `TranscriptionEvent.Delta` / `Completed` — streaming local transcripts
+  drop straight in; the Orchestrator needed no changes.
+- The PCM channel writer is completed when capture ends, so the service
+  finalizes the last utterance on channel completion.
 
-## Open questions
+## Candidates (resolved)
 
-- Streaming vs per-utterance batching; local VAD segmentation (see `voice-activity-detection.md`) vs endpointing inside the engine.
-- Whether to keep recording the WAV alongside STT (nice for review/debugging; WAV is lossless so STT can also consume the recorded file directly) or drop it.
-- Whether `RecordingTranscriptionService` becomes "record + transcribe" or a second service runs in parallel.
+- **sherpa-onnx** — chosen: streaming, low latency, endpointing built in,
+  per-RID NuGet native runtimes covering all five Sancho publish targets.
+- whisper.cpp / faster-whisper — rejected: batch-oriented, per-OS binary
+  shipping, or larger models for comparable accuracy (see ADR).
+
+## Open questions (still open)
+
+- Streaming vs per-utterance batching — resolved: streaming with engine
+  endpointing; no local VAD needed.
+- Whether to keep recording the WAV alongside STT (nice for review/debugging)
+  or drop it — still open; `record` mode remains for that.
+- Whether `RecordingTranscriptionService` becomes "record + transcribe" or a
+  second service runs in parallel — resolved: separate `local` mode, no
+  parallel recording for now.

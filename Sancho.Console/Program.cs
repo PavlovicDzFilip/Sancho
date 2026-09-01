@@ -121,13 +121,13 @@ catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 // ── Resolve configuration (defaults < ~/.sancho/config.json < env < flags) ──
 var stored = ConfigStore.Load();
 
-// Transcription backend: openai is the default; record writes a local WAV
-// instead of sending audio anywhere (the interim mode until local STT lands).
+// Transcription backend: openai is the default; record writes a local WAV;
+// local transcribes on-device with sherpa-onnx (no cloud round-trip).
 var mode = (cliArgs.Transcription ?? stored.Transcription ?? TranscriptionOptions.OpenAi)
     .ToLowerInvariant();
-if (mode is not (TranscriptionOptions.OpenAi or TranscriptionOptions.Record))
+if (mode is not (TranscriptionOptions.OpenAi or TranscriptionOptions.Record or TranscriptionOptions.Local))
 {
-    AnsiConsole.MarkupLine($"[red]Unknown transcription mode '{mode}'. Use 'openai' or 'record'.[/]");
+    AnsiConsole.MarkupLine($"[red]Unknown transcription mode '{mode}'. Use 'openai', 'record' or 'local'.[/]");
     return 2;
 }
 
@@ -135,6 +135,8 @@ var apiKey = cliArgs.ApiKey
     ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY")
     ?? stored.ApiKey;
 
+// Only openai mode needs a key for transcription; local/record use it
+// (if present) just for OpenAI-generated session titles.
 if (mode == TranscriptionOptions.OpenAi && string.IsNullOrWhiteSpace(apiKey))
 {
     // First run in openai mode: ask once, store it, and reuse it from ~/.sancho/config.json.
@@ -165,10 +167,14 @@ services.AddSingleton<Display>();
 services.AddSingleton<AudioSourceFactory>();
 services.AddSingleton<RealtimeTranscriptionService>();
 services.AddSingleton<RecordingTranscriptionService>();
-services.AddSingleton<ITranscriptionService>(sp =>
-    mode == TranscriptionOptions.Record
-        ? (ITranscriptionService)sp.GetRequiredService<RecordingTranscriptionService>()
-        : sp.GetRequiredService<RealtimeTranscriptionService>());
+services.AddSingleton<LocalSttModels>();
+services.AddSingleton<LocalTranscriptionService>();
+services.AddSingleton<ITranscriptionService>(sp => mode switch
+{
+    TranscriptionOptions.Record => sp.GetRequiredService<RecordingTranscriptionService>(),
+    TranscriptionOptions.Local => sp.GetRequiredService<LocalTranscriptionService>(),
+    _ => sp.GetRequiredService<RealtimeTranscriptionService>(),
+});
 services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromSeconds(45) });
 services.AddSingleton<SessionTitleService>();
 

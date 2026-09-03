@@ -7,7 +7,9 @@ namespace Sancho.Console.Config;
 /// A <c>null</c> value means "not set"; resolution happens with
 /// precedence in Program.cs (defaults &lt; file &lt; env &lt; flags).
 /// </summary>
-public sealed record SanchoConfig(string? ApiKey = null, string? Transcription = null);
+public sealed record SanchoConfig(
+    string? ApiKey = null,
+    string? Transcription = null);
 
 /// <summary>Source-generated JSON serializer for <see cref="SanchoConfig"/> (AOT-safe).</summary>
 [JsonSourceGenerationOptions(WriteIndented = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]

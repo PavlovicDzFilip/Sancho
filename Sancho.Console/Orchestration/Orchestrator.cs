@@ -31,8 +31,13 @@ public sealed class Orchestrator(
     // the monitor loop re-renders it so signal loss appears without an event.
     private string _statusBase = "";
     private Display.HistoryColor _statusColor = Display.HistoryColor.Warn;
-    private bool _signalWarned;
     private bool _clipWarned;
+
+    // The idle cue rendered where the next transcribed sentence will appear:
+    // it prompts the user to speak, then reassures them while audio is being
+    // captured before the pause.
+    private string? _hintText;
+    private Display.HistoryColor _hintColor = Display.HistoryColor.Dim;
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -76,6 +81,12 @@ public sealed class Orchestrator(
         SetStatus(
             RecordingMode ? "recording: starting…" : "transcription: connecting…",
             Display.HistoryColor.Warn);
+
+        if (!RecordingMode)
+        {
+            SetHint("🎤 Start talking…", Display.HistoryColor.Dim);
+            UpdateTranscript();
+        }
 
         // The ALSA mixer knows for certain whether the mic-mute switch is on
         // (the physical button toggles the Capture switch) — warn once at
@@ -246,25 +257,42 @@ public sealed class Orchestrator(
 
                 case TranscriptionEvent.Completed completed:
                     _currentDelta = null;
+                    SetHint("🎤 Start talking…", Display.HistoryColor.Dim);
                     var sentence = completed.Transcript.Trim();
                     if (!string.IsNullOrWhiteSpace(sentence))
                     {
                         lock (_bufferLock)
                             _buffer.Add(sentence);
-                        UpdateTranscript();
                         TryFlushBuffer();
                     }
 
+                    UpdateTranscript();
+                    SetStatus("transcription: connected", Display.HistoryColor.Ok);
+                    break;
+
+                case TranscriptionEvent.SpeechDetected:
+                    SetStatus("transcription: ● hearing…", Display.HistoryColor.Ok);
+                    SetHint("🎤 Listening…", Display.HistoryColor.Ok);
+                    UpdateTranscript();
+                    break;
+
+                case TranscriptionEvent.Decoding:
+                    SetStatus("transcription: ⏳ transcribing…", Display.HistoryColor.Ok);
+                    SetHint("⏳ Transcribing…", Display.HistoryColor.Ok);
+                    UpdateTranscript();
                     break;
 
                 case TranscriptionEvent.Connected:
                     SetStatus("transcription: connected", Display.HistoryColor.Ok);
+                    SetHint("🎤 Start talking…", Display.HistoryColor.Dim);
+                    UpdateTranscript();
                     break;
 
                 case TranscriptionEvent.Reconnecting(var msg):
                     logger.LogWarning("Transcription reconnect: {Message}", msg);
                     SetStatus("transcription: reconnecting", Display.HistoryColor.Warn);
                     _currentDelta = null; // the server lost its partial transcript too
+                    SetHint(null, Display.HistoryColor.Dim);
                     UpdateTranscript();
                     display.History.AppendLine($"⚠ {msg}");
                     break;
@@ -274,6 +302,8 @@ public sealed class Orchestrator(
                     SetStatus(
                         RecordingMode ? "recording: failed" : "transcription: failed",
                         Display.HistoryColor.Error);
+                    SetHint(null, Display.HistoryColor.Dim);
+                    UpdateTranscript();
                     display.History.AppendLine($"🛑 {msg}", Display.HistoryColor.Error);
                     display.History.AppendLine(
                         RecordingMode
@@ -296,25 +326,21 @@ public sealed class Orchestrator(
         RenderStatus();
     }
 
+    /// <summary>Sets the cue rendered where the next sentence will appear (null hides it).</summary>
+    private void SetHint(string? text, Display.HistoryColor color)
+    {
+        _hintText = text;
+        _hintColor = color;
+    }
+
     /// <summary>Redraws the status bar: transcription state + live mic level.</summary>
     private void RenderStatus()
     {
         var silent = micMonitor.IsSilent;
         var clipped = micMonitor.IsClipped;
 
-        if (silent && !_signalWarned)
-        {
-            // One-time warning per silence episode — this catches the physical
-            // mute button and every other cause, on every platform.
-            _signalWarned = true;
-            display.History.AppendLine(
-                "⚠ No audio signal — is the microphone muted (e.g. the physical mute button) or unplugged?",
-                Display.HistoryColor.Warn);
-        }
-        else if (!silent)
-        {
-            _signalWarned = false;
-        }
+        // No "no signal" text: silence shows as a flat meter; clipping
+        // warns once in the history above.
 
         if (clipped && !_clipWarned)
         {
@@ -331,15 +357,13 @@ public sealed class Orchestrator(
             _clipWarned = false;
         }
 
-        var suffix = silent ? "   mic: no signal"
-            : clipped ? "   mic: clipped signal"
-            : $"   mic: {LevelMeter(micMonitor.Level)}";
+        var suffix = $"   mic: {LevelMeter(micMonitor.Level)}";
         display.Transcript.SetStatus(
             _statusBase + suffix,
             silent || clipped ? Display.HistoryColor.Warn : _statusColor);
     }
 
-    /// <summary>Re-renders the status bar once a second so signal loss appears without any event.</summary>
+    /// <summary>Re-renders the status bar at 10 Hz so the mic meter feels live and signal loss appears without any event.</summary>
     private async Task MonitorMicAsync(CancellationToken ct)
     {
         try
@@ -347,7 +371,7 @@ public sealed class Orchestrator(
             while (!ct.IsCancellationRequested)
             {
                 RenderStatus();
-                await Task.Delay(1000, ct);
+                await Task.Delay(100, ct);
             }
         }
         catch (OperationCanceledException)
@@ -373,7 +397,7 @@ public sealed class Orchestrator(
         string[] snapshot;
         lock (_bufferLock)
             snapshot = _buffer.ToArray();
-        display.Transcript.Set(snapshot, _currentDelta);
+        display.Transcript.Set(snapshot, _currentDelta, _hintText, _hintColor);
     }
 
     // ── Buffer flush ───────────────────────────────────────────────
@@ -393,7 +417,7 @@ public sealed class Orchestrator(
                 foreach (var line in combined.Split(Environment.NewLine))
                     display.History.AppendLine($"💬 {line}");
 
-                display.Transcript.Clear();
+                UpdateTranscript(); // clears the queued lines and restores the idle hint
                 claudeService.Send(combined);
                 _claudeIsReady = false;
             }

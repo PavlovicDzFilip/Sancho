@@ -424,6 +424,7 @@ public sealed class ClaudeService
                     ["message"] = new JsonObject { ["role"] = "user", ["content"] = sentence }
                 }.ToJsonString();
 
+                _logger.LogDebug("→ claude: {Text}", sentence);
                 await _stdin!.WriteLineAsync(json);
                 writer.TryWrite(ClaudeEvent.TurnStart.Instance);
 
@@ -459,6 +460,8 @@ public sealed class ClaudeService
             {
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
+
+                _logger.LogDebug("← claude: {Line}", line);
 
                 try
                 {

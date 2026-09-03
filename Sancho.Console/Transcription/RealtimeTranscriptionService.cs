@@ -20,6 +20,8 @@ public sealed class RealtimeTranscriptionService(TranscriptionOptions options)
     private const int HeaderBufferSize = 4096;
     private const string DeltaEventType = "conversation.item.input_audio_transcription.delta";
     private const string CompletedEventType = "conversation.item.input_audio_transcription.completed";
+    private const string SpeechStartedEventType = "input_audio_buffer.speech_started";
+    private const string SpeechStoppedEventType = "input_audio_buffer.speech_stopped";
     private const string ErrorEventType = "error";
     private const int MaxReconnectAttempts = 5;
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
@@ -205,6 +207,15 @@ public sealed class RealtimeTranscriptionService(TranscriptionOptions options)
                 ? (null, null)
                 : (new TranscriptionEvent.Completed(text), null);
         }
+
+        // Server-side VAD turn events drive the hearing/transcribing
+        // indicators: speech_started marks the start of an utterance,
+        // speech_stopped marks the pause that triggers transcription.
+        if (type == SpeechStartedEventType)
+            return (new TranscriptionEvent.SpeechDetected(), null);
+
+        if (type == SpeechStoppedEventType)
+            return (new TranscriptionEvent.Decoding(), null);
 
         if (type == ErrorEventType)
         {

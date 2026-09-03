@@ -7,7 +7,10 @@ namespace Sancho.Console;
 public sealed class Display : IDisposable
 {
     // ── Transcript geometry ───────────────────────────────────────
-    private const int TranscriptRows = 5; // fixed: 1 separator + up to 4 content rows
+    private const int ContentRows = 4; // queued/delta lines below the bar
+    private const int StatusRows = 1;  // status line above the bar
+    private const int BarRows = 1;     // plain separator
+    private const int TranscriptRows = ContentRows + StatusRows + BarRows; // 6 pinned rows
     private readonly object _renderLock = new();
 
     // ── Value objects ─────────────────────────────────────────────
@@ -33,10 +36,26 @@ public sealed class Display : IDisposable
     public HistoryPanel History { get; }
     public TranscriptPanel Transcript { get; }
 
+    /// <summary>True when stdout is redirected — no usable console to pin the TUI to.</summary>
+    private static bool Redirected => System.Console.IsOutputRedirected;
+
     public void Start()
     {
-        // Reserve bottom 5 rows via ANSI scroll region — scroll region
-        // ends 5 rows above the bottom so history never overlaps transcript.
+        if (Redirected)
+            return; // no console: the TUI degrades to plain lines
+        // The cursor jumps between rows on every panel draw and its blink is
+        // pure noise here — hide it for the run. Purely cosmetic: if the
+        // terminal can't do it, keep going.
+        try
+        {
+            System.Console.CursorVisible = false;
+        }
+        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException)
+        {
+        }
+
+        // Reserve the bottom rows via ANSI scroll region — the region ends
+        // above the transcript panel so history never overlaps it.
         var total = System.Console.WindowHeight;
         if (total > TranscriptRows)
             System.Console.Write($"\e[1;{total - TranscriptRows}r");
@@ -46,6 +65,8 @@ public sealed class Display : IDisposable
     /// <summary>Re-apply the scroll region (e.g. after terminal resize).</summary>
     internal void RefreshScrollRegion()
     {
+        if (Redirected)
+            return;
         var total = System.Console.WindowHeight;
         if (total <= TranscriptRows) return;
         System.Console.Write($"\e[r"); // reset first
@@ -55,6 +76,13 @@ public sealed class Display : IDisposable
     public void Dispose()
     {
         System.Console.Write("\e[r"); // reset scroll region
+        try
+        {
+            System.Console.CursorVisible = true;
+        }
+        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException)
+        {
+        }
     }
 
     // ── ANSI helpers ──────────────────────────────────────────────
@@ -74,6 +102,8 @@ public sealed class Display : IDisposable
     /// </summary>
     internal static (int Left, int Top) SaveCursorPosition()
     {
+        if (Redirected)
+            return default;
         if (OperatingSystem.IsWindows())
             return System.Console.GetCursorPosition();
 
@@ -84,6 +114,8 @@ public sealed class Display : IDisposable
     /// <summary>Returns the cursor to a position saved by <see cref="SaveCursorPosition"/>.</summary>
     internal static void RestoreCursorPosition((int Left, int Top) pos)
     {
+        if (Redirected)
+            return;
         if (OperatingSystem.IsWindows())
             System.Console.SetCursorPosition(pos.Left, pos.Top);
         else
@@ -105,6 +137,18 @@ public sealed class Display : IDisposable
             color ??= HistoryColor.Default;
             lock (_display._renderLock)
             {
+                if (!Redirected)
+                {
+                    // Write at the last row of the scroll region: the line
+                    // appears at the bottom of the history area and the region
+                    // scrolls up. Writing at the natural cursor position would
+                    // overwrite the lines already on screen (e.g. the startup
+                    // banner) until the cursor reaches the region bottom.
+                    var bottom = System.Console.WindowHeight - TranscriptRows - 1;
+                    if (bottom >= 0)
+                        System.Console.SetCursorPosition(0, bottom);
+                }
+
                 System.Console.WriteLine(FormatLine(text, color));
             }
         }
@@ -122,10 +166,29 @@ public sealed class Display : IDisposable
 
         internal TranscriptPanel(Display display) => _display = display;
 
-        public void Set(IReadOnlyList<string> queued, string? currentDelta)
+        /// <param name="hint">
+        /// Fallback line drawn on the bottom content row when there is no
+        /// queued text or live delta — the "start talking" cue sits exactly
+        /// where the next transcribed sentence will appear.
+        /// </param>
+        public void Set(
+            IReadOnlyList<string> queued,
+            string? currentDelta,
+            string? hint = null,
+            HistoryColor? hintColor = null)
         {
             lock (_display._renderLock)
             {
+                if (Redirected)
+                {
+                    // No console to pin the panel to — fall back to plain lines.
+                    foreach (var q in queued)
+                        System.Console.WriteLine($"  ⏳ {q}");
+                    if (currentDelta is { Length: > 0 })
+                        System.Console.WriteLine($"  ▶ {currentDelta}");
+                    return;
+                }
+
                 var total = System.Console.WindowHeight;
                 var width = System.Console.WindowWidth;
                 var startRow = Math.Max(0, total - TranscriptRows);
@@ -147,16 +210,24 @@ public sealed class Display : IDisposable
                     lines.AddRange(Wrap($"  ⏳ {q}", width));
                 if (currentDelta is { Length: > 0 })
                     lines.AddRange(Wrap($"  ▶ {currentDelta}", width));
+                else if (lines.Count == 0 && hint is { Length: > 0 })
+                {
+                    // The hint replaces itself in place: once a delta or
+                    // sentence lands, the same bottom row holds real text.
+                    lines.AddRange(Wrap(
+                        FormatLine($"  {hint}", hintColor ?? HistoryColor.Dim), width));
+                }
 
-                // Fixed 5-row transcript: separator + up to 4 content rows
-                const int maxContentRows = TranscriptRows - 1; // 4
-                var contentRows = Math.Min(lines.Count, maxContentRows);
-
-                // Assemble the full frame: separator row + content rows bottom-up.
+                // Panel layout: content rows at the bottom, the plain
+                // separator bar above them, the status row at the top
+                // (drawn by SetStatus, not part of the frame). Content is
+                // ordered top-down: the latest line (live delta) sits on the
+                // bottom row and earlier sentences stack above it.
                 var frame = new string[TranscriptRows];
-                frame[0] = BuildSeparatorText(width);
+                frame[BarRows] = new string('─', width);
+                var contentRows = Math.Min(lines.Count, ContentRows);
                 for (var k = 0; k < contentRows; k++)
-                    frame[TranscriptRows - 1 - k] = lines[lines.Count - contentRows + k];
+                    frame[TranscriptRows - 1 - k] = lines[lines.Count - 1 - k];
 
                 // Clear the whole transcript area on resize (rows may have moved).
                 if (sizeChanged)
@@ -189,46 +260,41 @@ public sealed class Display : IDisposable
             }
         }
 
-        /// <summary>Updates the connection status shown on the separator line.</summary>
+        /// <summary>Updates the status line shown above the separator bar.</summary>
         public void SetStatus(string text, HistoryColor color)
         {
             lock (_display._renderLock)
             {
                 _statusText = text;
                 _statusColor = color;
-                DrawSeparator();
+                DrawStatusRow();
             }
         }
 
-        /// <summary>Draws the separator line, with the status centered when set.</summary>
-        private void DrawSeparator()
+        /// <summary>Draws the status line above the bar, left-aligned.</summary>
+        private void DrawStatusRow()
         {
+            if (Redirected)
+            {
+                if (_statusText is not null)
+                    System.Console.WriteLine(_statusText);
+                return;
+            }
+
             var total = System.Console.WindowHeight;
             var width = System.Console.WindowWidth;
-            var startRow = Math.Max(0, total - TranscriptRows);
+            var row = Math.Max(0, total - TranscriptRows);
             var (left, top) = SaveCursorPosition();
 
-            var text = BuildSeparatorText(width);
-            System.Console.SetCursorPosition(0, startRow);
-            System.Console.Write(new string(' ', width));
-            System.Console.SetCursorPosition(0, startRow);
-            System.Console.Write(text);
+            var text = _statusText ?? "";
+            if (text.Length > width)
+                text = text[..width];
+            System.Console.SetCursorPosition(0, row);
+            System.Console.Write(FormatLine(
+                text + new string(' ', width - text.Length),
+                _statusColor ?? HistoryColor.Default));
+
             RestoreCursorPosition((left, top));
-
-            // Keep the frame cache in sync so Set() doesn't redraw it twice.
-            _lastFrame[0] = text;
-        }
-
-        /// <summary>Builds the separator row text, with the status centered when set.</summary>
-        private string BuildSeparatorText(int width)
-        {
-            var label = _statusText is null ? "" : $" {_statusText} ";
-            if (label.Length == 0)
-                return new string('─', width);
-
-            var leftWidth = Math.Max(0, (width - label.Length) / 2);
-            var rightWidth = Math.Max(0, width - leftWidth - label.Length);
-            return new string('─', leftWidth) + FormatLine(label, _statusColor!) + new string('─', rightWidth);
         }
 
         public void Clear()

@@ -5,35 +5,36 @@ namespace Sancho.Console.Transcription;
 
 /// <summary>
 /// Downloads the local speech-to-text model files (sherpa-onnx offline
-/// zipformer English int8 + silero VAD) into <c>~/.sancho/models/</c> on
+/// whisper small.en int8 + silero VAD) into <c>~/.sancho/models/</c> on
 /// first use. Files already on disk are reused; downloads land in
 /// <c>.part</c> files and are moved into place only when complete, so an
 /// interrupted download never leaves a half-written model behind.
+/// Model-size note: small.en was chosen for accuracy and may be worth
+/// revisiting (base.en for faster decode, multilingual base for other
+/// languages) — see docs/feature/local-stt/ADR-0003.
 /// </summary>
 public sealed class LocalSttModels(ILogger<LocalSttModels> logger)
 {
-    public const string ModelDirName = "sherpa-onnx-zipformer-en-2023-06-26";
+    public const string ModelDirName = "sherpa-onnx-whisper-small.en";
 
     private const string BaseUrl =
-        "https://huggingface.co/csukuangfj/sherpa-onnx-zipformer-en-2023-06-26/resolve/main/";
+        "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-small.en/resolve/main/";
 
-    // The streaming model predates the offline engine (ADR-0002); its files
+    // The zipformer model predates the whisper engine (ADR-0003); its files
     // are no longer read, so a completed download cleans the stale directory.
-    private const string SupersededModelDirName = "sherpa-onnx-streaming-zipformer-en-2023-06-26";
+    private const string SupersededModelDirName = "sherpa-onnx-zipformer-en-2023-06-26";
 
-    // Dedicated client: the 66 MB encoder can exceed the app-wide 45 s
+    // Dedicated client: the ~230 MB encoder can exceed the app-wide 45 s
     // HttpClient timeout on slow connections, so downloads get their own.
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(30) };
 
     private static readonly (string File, string Url)[] Files =
     [
-        ("encoder-epoch-99-avg-1.int8.onnx",
-         BaseUrl + "encoder-epoch-99-avg-1.int8.onnx"),
-        ("decoder-epoch-99-avg-1.int8.onnx",
-         BaseUrl + "decoder-epoch-99-avg-1.int8.onnx"),
-        ("joiner-epoch-99-avg-1.int8.onnx",
-         BaseUrl + "joiner-epoch-99-avg-1.int8.onnx"),
-        ("tokens.txt", BaseUrl + "tokens.txt"),
+        ("small.en-encoder.int8.onnx",
+         BaseUrl + "small.en-encoder.int8.onnx"),
+        ("small.en-decoder.int8.onnx",
+         BaseUrl + "small.en-decoder.int8.onnx"),
+        ("small.en-tokens.txt", BaseUrl + "small.en-tokens.txt"),
         ("silero_vad.onnx",
          "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"),
     ];

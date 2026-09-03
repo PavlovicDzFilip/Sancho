@@ -8,14 +8,13 @@ namespace Sancho.Console.Transcription;
 
 /// <summary>
 /// Local speech-to-text via sherpa-onnx: silero VAD for utterance
-/// segmentation + offline (non-streaming) zipformer English int8 for decode.
-/// The offline encoder sees the whole utterance instead of a 16-chunk
-/// streaming window, which is both more accurate and ~12x cheaper in CPU
-/// (measured 0.16 cores vs 1.9 for the streaming model — see
-/// <c>docs/feature/local-stt/ADR-0002-offline-zipformer-vad.md</c>).
-/// Segmented utterances arrive as <see cref="TranscriptionEvent.Completed"/>
-/// events at utterance end — there are no live deltas. No audio ever leaves
-/// the machine.
+/// segmentation + offline (non-streaming) whisper small.en int8 for decode.
+/// Whisper sees the whole utterance, which is far more accurate than a
+/// streaming window. Segmented utterances arrive as
+/// <see cref="TranscriptionEvent.Completed"/> events at utterance end —
+/// there are no live deltas. No audio ever leaves the machine.
+/// Model-size note: small.en may be worth revisiting (see
+/// <c>docs/feature/local-stt/ADR-0003-offline-whisper-vad.md</c>).
 /// </summary>
 /// <remarks>
 /// Events flow from the producer through an unbounded channel: the iterator
@@ -86,8 +85,8 @@ public sealed class LocalTranscriptionService(
             // Pending accumulates the 24 kHz audio since the last utterance, so
             // every decode gets its full pre-roll for free (silero's onset
             // detection lags speech by a window or two). Decoding pending — not
-            // the VAD's own 16 kHz segment — also keeps sherpa's internal
-            // high-quality resampler on the recognizer path.
+            // the VAD's own 16 kHz segment — keeps the pre-roll; Decode()
+            // resamples it to the model's 16 kHz rate.
             var pending = new List<float>();
             var vadBatch = new List<float>();
             var hadSpeech = false;
@@ -108,8 +107,11 @@ public sealed class LocalTranscriptionService(
                 {
                     vad.AcceptWaveform(vadBatch.ToArray());
                     vadBatch.Clear();
-                    if (vad.IsSpeechDetected())
+                    if (vad.IsSpeechDetected() && !hadSpeech)
+                    {
                         hadSpeech = true;
+                        events.TryWrite(new TranscriptionEvent.SpeechDetected());
+                    }
 
                     DecodeReadySegments(vad, recognizer, pending, events, ref hadSpeech);
                 }
@@ -154,9 +156,10 @@ public sealed class LocalTranscriptionService(
         {
             var segment = vad.Front();
             vad.Pop();
-            if (segment.Samples.Length < VadSampleRate / 4 || !hadSpeech)
-                continue; // shorter than 250 ms of speech: not an utterance
+            if (segment.Samples.Length < VadSampleRate / 2 || !hadSpeech)
+                continue; // shorter than 500 ms of speech: noise, not an utterance
 
+            events.TryWrite(new TranscriptionEvent.Decoding());
             var transcript = Decode(recognizer, pending);
             pending.Clear();
             hadSpeech = false;
@@ -171,7 +174,13 @@ public sealed class LocalTranscriptionService(
     private static string Decode(OfflineRecognizer recognizer, List<float> samples)
     {
         using var stream = recognizer.CreateStream();
-        stream.AcceptWaveform(CaptureSampleRate, samples.ToArray());
+        // Feed the model its native 16 kHz rate. whisper's 80-dim log-mel
+        // features only span 0-8 kHz, so the linear 3:2 resampler's aliasing
+        // (which lands above 8 kHz) is invisible to the model — and matching
+        // the rate means sherpa never creates its own resampler, which would
+        // print a LOGE "Creating a resampler" message to stderr per decode.
+        var samples16k = ResampleTo16k(samples.ToArray());
+        stream.AcceptWaveform(VadSampleRate, samples16k);
         recognizer.Decode(stream);
         return stream.Result.Text;
     }
@@ -182,7 +191,11 @@ public sealed class LocalTranscriptionService(
         var config = new VadModelConfig();
         config.SileroVad.Model = Path.Combine(modelDir, "silero_vad.onnx");
         config.SileroVad.Threshold = 0.5f;
-        config.SileroVad.MinSilenceDuration = 0.5f;
+        // 1.5 s of silence closes a segment: with 0.5 s every mid-sentence
+        // pause split the utterance, and whisper hallucinated on the short
+        // leftover chunks ("half-baked sentences" to Claude). The longer
+        // silence costs ~1 s of extra latency after the speaker stops.
+        config.SileroVad.MinSilenceDuration = 1.5f;
         config.SileroVad.MinSpeechDuration = 0.25f;
         config.SileroVad.MaxSpeechDuration = 20f;
         config.SileroVad.WindowSize = 512;
@@ -191,21 +204,21 @@ public sealed class LocalTranscriptionService(
         return new VoiceActivityDetector(config, 120); // 2 min buffer
     }
 
-    /// <summary>Builds the recognizer for the offline zipformer English int8 model.</summary>
+    /// <summary>Builds the recognizer for the offline whisper small.en int8 model.</summary>
     private static OfflineRecognizer CreateRecognizer(string modelDir)
     {
         var config = new OfflineRecognizerConfig();
         config.FeatConfig.SampleRate = 16000; // the model's rate; capture audio is resampled to it
         config.FeatConfig.FeatureDim = 80;
-        config.ModelConfig.Transducer.Encoder =
-            Path.Combine(modelDir, "encoder-epoch-99-avg-1.int8.onnx");
-        config.ModelConfig.Transducer.Decoder =
-            Path.Combine(modelDir, "decoder-epoch-99-avg-1.int8.onnx");
-        config.ModelConfig.Transducer.Joiner =
-            Path.Combine(modelDir, "joiner-epoch-99-avg-1.int8.onnx");
-        config.ModelConfig.Tokens = Path.Combine(modelDir, "tokens.txt");
+        config.ModelConfig.Whisper.Encoder =
+            Path.Combine(modelDir, "small.en-encoder.int8.onnx");
+        config.ModelConfig.Whisper.Decoder =
+            Path.Combine(modelDir, "small.en-decoder.int8.onnx");
+        config.ModelConfig.Whisper.Language = ""; // auto-detect; the .en model is English-only
+        config.ModelConfig.Whisper.Task = "transcribe";
+        config.ModelConfig.Tokens = Path.Combine(modelDir, "small.en-tokens.txt");
         config.ModelConfig.Provider = "cpu";
-        config.ModelConfig.NumThreads = 2;
+        config.ModelConfig.NumThreads = 4; // whisper decode is heavier than zipformer was
         config.DecodingMethod = "greedy_search";
         return new OfflineRecognizer(config);
     }
@@ -220,10 +233,11 @@ public sealed class LocalTranscriptionService(
     }
 
     /// <summary>
-    /// Resamples 24 kHz capture audio to the VAD's 16 kHz rate by linear
-    /// interpolation (3:2). The VAD only needs the speech envelope, so the
-    /// cheaper resampler is fine here — the recognizer path keeps sherpa's
-    /// internal windowed-sinc resampler instead.
+    /// Resamples 24 kHz capture audio to the 16 kHz model rate by linear
+    /// interpolation (3:2). Both consumers get this output: the VAD only
+    /// needs the speech envelope, and whisper's log-mel features only span
+    /// 0-8 kHz, so the aliasing from the cheap resampler (above 8 kHz) never
+    /// reaches either model.
     /// </summary>
     private static float[] ResampleTo16k(float[] samples)
     {

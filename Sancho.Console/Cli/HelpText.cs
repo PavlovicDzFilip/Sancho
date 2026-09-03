@@ -22,6 +22,8 @@ public static class HelpText
         Options:
           --api-key <key>                 OpenAI API key (this run only; not persisted)
           --transcription <mode>          openai (default), record or local — this run only, not persisted
+          --log                            Write a run log (console mirror + debug diagnostics + claude I/O)
+                                           to ~/.sancho/sancho.log — this run only, not persisted
           -h, --help                      Show this help
           -v, --version                   Show version
 
@@ -31,7 +33,7 @@ public static class HelpText
         Local (--transcription local):
           On-device speech-to-text via sherpa-onnx — your voice never leaves the machine.
           Utterances arrive when you stop speaking (~1 s after).
-          First run downloads the speech model (~70 MB) into ~/.sancho/models.
+          First run downloads the speech model (~380 MB) into ~/.sancho/models.
 
         Recording (--transcription record):
           Files: ~/.sancho/recordings     (WAV; SANCHO_CONFIG_DIR overrides the directory)

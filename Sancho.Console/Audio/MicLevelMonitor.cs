@@ -33,10 +33,18 @@ public sealed class MicLevelMonitor
     private long _meanLevelBits;
     private long _silentSince = -1;
     private long _clippedSince = -1;
+    private int _seenSignal;
 
     /// <summary>Recent signal level, 0..1 (peak, exponentially smoothed).</summary>
     public double Level =>
         BitConverter.Int64BitsToDouble(Interlocked.Read(ref _levelBits));
+
+    /// <summary>
+    /// True once any chunk has risen above the noise floor. The mute warning
+    /// should only fire before this ever happens — silence between turns is
+    /// normal, not a mute.
+    /// </summary>
+    public bool HasSeenSignal => Volatile.Read(ref _seenSignal) != 0;
 
     /// <summary>Recent mean-absolute level, 0..1 (exponentially smoothed).</summary>
     public double MeanLevel =>
@@ -100,6 +108,7 @@ public sealed class MicLevelMonitor
         else
         {
             Interlocked.Exchange(ref _silentSince, -1);
+            Volatile.Write(ref _seenSignal, 1);
         }
 
         if (MeanLevel >= ClippedMeanThreshold)

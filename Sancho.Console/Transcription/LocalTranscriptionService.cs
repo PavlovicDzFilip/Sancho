@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using SherpaOnnx;
@@ -9,8 +10,9 @@ namespace Sancho.Console.Transcription;
 /// <summary>
 /// Local speech-to-text via sherpa-onnx: silero VAD for utterance
 /// segmentation + offline (non-streaming) whisper small.en int8 for decode.
-/// Whisper sees the whole utterance, which is far more accurate than a
-/// streaming window. Segmented utterances arrive as
+/// Whisper sees the whole utterance — long utterances are decoded in 28 s
+/// windows internally and joined, so a single transcript still arrives per
+/// utterance. Segmented utterances arrive as
 /// <see cref="TranscriptionEvent.Completed"/> events at utterance end —
 /// there are no live deltas. No audio ever leaves the machine.
 /// Model-size note: small.en may be worth revisiting (see
@@ -31,6 +33,20 @@ public sealed class LocalTranscriptionService(
 
     /// <summary>How much pre-speech audio the pending buffer keeps while nothing has been said.</summary>
     private const int SilencePreRollSamples = CaptureSampleRate * 2;
+
+    /// <summary>
+    /// Whisper is trained on 30 s of audio — beyond that its positional
+    /// embeddings extrapolate and output degrades. Long utterances are
+    /// decoded in windows this long and the texts joined.
+    /// </summary>
+    private const int WhisperWindowSamples = 28 * VadSampleRate;
+
+    /// <summary>
+    /// Overlap between adjacent windows, so a word straddling the boundary
+    /// is complete in at least one window. Duplicates whisper produces for
+    /// the shared region are stripped when the texts are joined.
+    /// </summary>
+    private const int WhisperOverlapSamples = VadSampleRate; // 1 s — longer than almost any word
 
     /// <inheritdoc />
     public async IAsyncEnumerable<TranscriptionEvent> TranscribeAsync(
@@ -170,17 +186,89 @@ public sealed class LocalTranscriptionService(
         }
     }
 
-    /// <summary>Batch-decodes one utterance and returns its final transcript.</summary>
+    /// <summary>
+    /// Batch-decodes one utterance and returns its final transcript. Utterances
+    /// longer than the whisper window are decoded in 28 s windows with a 1 s
+    /// overlap (so no word is cut at a window boundary) and the texts joined
+    /// with the duplicated overlap words stripped — the caller still gets a
+    /// single transcript per utterance, so minutes of continuous speech arrive
+    /// as one text, never split.
+    /// </summary>
     private static string Decode(OfflineRecognizer recognizer, List<float> samples)
     {
-        using var stream = recognizer.CreateStream();
         // Feed the model its native 16 kHz rate. whisper's 80-dim log-mel
         // features only span 0-8 kHz, so the linear 3:2 resampler's aliasing
         // (which lands above 8 kHz) is invisible to the model — and matching
         // the rate means sherpa never creates its own resampler, which would
         // print a LOGE "Creating a resampler" message to stderr per decode.
         var samples16k = ResampleTo16k(samples.ToArray());
-        stream.AcceptWaveform(VadSampleRate, samples16k);
+        if (samples16k.Length <= WhisperWindowSamples)
+            return DecodeWindow(recognizer, samples16k);
+
+        var parts = new List<string>();
+        for (var start = 0; start < samples16k.Length; start += WhisperWindowSamples - WhisperOverlapSamples)
+        {
+            var count = Math.Min(WhisperWindowSamples, samples16k.Length - start);
+            var text = DecodeWindow(recognizer, samples16k.AsSpan(start, count).ToArray()).Trim();
+            if (text.Length > 0)
+                parts.Add(text);
+        }
+
+        return JoinOverlappingParts(parts);
+    }
+
+    /// <summary>
+    /// Joins the transcripts of overlapping windows. The shared overlap region
+    /// is transcribed by both windows, so each part after the first starts
+    /// with words the previous part already ended with — strip those.
+    /// </summary>
+    private static string JoinOverlappingParts(List<string> parts)
+    {
+        var result = new StringBuilder(parts[0]);
+        for (var i = 1; i < parts.Count; i++)
+        {
+            var prevWords = result.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var nextWords = parts[i].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+            // Find the longest run (up to 3 words — the 1 s overlap holds
+            // at most a couple) that repeats at the seam, and skip it.
+            var max = Math.Min(3, Math.Min(prevWords.Length, nextWords.Length));
+            var skip = 0;
+            for (var k = max; k >= 1; k--)
+            {
+                var match = true;
+                for (var j = 0; j < k; j++)
+                {
+                    if (!string.Equals(prevWords[prevWords.Length - k + j], nextWords[j],
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+
+                if (match)
+                {
+                    skip = k;
+                    break;
+                }
+            }
+
+            if (skip < nextWords.Length)
+            {
+                result.Append(' ');
+                result.Append(string.Join(' ', nextWords.Skip(skip)));
+            }
+        }
+
+        return result.ToString().Trim();
+    }
+
+    /// <summary>Decodes one whisper-sized window of 16 kHz samples.</summary>
+    private static string DecodeWindow(OfflineRecognizer recognizer, float[] window)
+    {
+        using var stream = recognizer.CreateStream();
+        stream.AcceptWaveform(VadSampleRate, window);
         recognizer.Decode(stream);
         return stream.Result.Text;
     }
@@ -197,11 +285,15 @@ public sealed class LocalTranscriptionService(
         // silence costs ~1 s of extra latency after the speaker stops.
         config.SileroVad.MinSilenceDuration = 1.5f;
         config.SileroVad.MinSpeechDuration = 0.25f;
-        config.SileroVad.MaxSpeechDuration = 20f;
+        // Long continuous speech must not be split: silero's default force-ends
+        // a segment after 20 s, cutting a monologue into pieces. The 10-minute
+        // cap is far beyond any realistic utterance and only exists to keep the
+        // VAD buffer bounded — Decode() handles the whisper 30 s window itself.
+        config.SileroVad.MaxSpeechDuration = 600f;
         config.SileroVad.WindowSize = 512;
         config.SampleRate = VadSampleRate; // silero's native rate; capture audio is resampled to it
         config.NumThreads = 1;             // silero is tiny — extra threads only spin
-        return new VoiceActivityDetector(config, 120); // 2 min buffer
+        return new VoiceActivityDetector(config, 660); // buffer must exceed MaxSpeechDuration
     }
 
     /// <summary>Builds the recognizer for the offline whisper small.en int8 model.</summary>

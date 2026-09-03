@@ -271,13 +271,14 @@ public sealed class Orchestrator(
                     break;
 
                 case TranscriptionEvent.SpeechDetected:
-                    SetStatus("transcription: ● hearing…", Display.HistoryColor.Ok);
-                    SetHint("🎤 Listening…", Display.HistoryColor.Ok);
+                    // Activity lives in the hint line — the status label only
+                    // ever shows the connection state (connected/reconnecting/
+                    // failed), so it stays untouched here.
+                    SetHint("🎤 Listening — I'll transcribe when you pause", Display.HistoryColor.Ok);
                     UpdateTranscript();
                     break;
 
                 case TranscriptionEvent.Decoding:
-                    SetStatus("transcription: ⏳ transcribing…", Display.HistoryColor.Ok);
                     SetHint("⏳ Transcribing…", Display.HistoryColor.Ok);
                     UpdateTranscript();
                     break;
@@ -336,7 +337,6 @@ public sealed class Orchestrator(
     /// <summary>Redraws the status bar: transcription state + live mic level.</summary>
     private void RenderStatus()
     {
-        var silent = micMonitor.IsSilent;
         var clipped = micMonitor.IsClipped;
 
         // No "no signal" text: silence shows as a flat meter; clipping
@@ -357,10 +357,11 @@ public sealed class Orchestrator(
             _clipWarned = false;
         }
 
-        var suffix = $"   mic: {LevelMeter(micMonitor.Level)}";
-        display.Transcript.SetStatus(
-            _statusBase + suffix,
-            silent || clipped ? Display.HistoryColor.Warn : _statusColor);
+        // "mic:" and the meter color themselves (default/white, so the mic
+        // reads as normal text); the outer color applies to the connection
+        // label only, so it never changes with signal state.
+        var suffix = $"{Display.HistoryColor.Default.Ansi}   mic: {LevelMeter(micMonitor.Level)}";
+        display.Transcript.SetStatus(_statusBase + suffix, _statusColor);
     }
 
     /// <summary>Re-renders the status bar at 10 Hz so the mic meter feels live and signal loss appears without any event.</summary>
@@ -379,13 +380,22 @@ public sealed class Orchestrator(
         }
     }
 
-    /// <summary>Maps a 0..1 level to one meter character.</summary>
+    /// <summary>
+    /// Maps a 0..1 level to a battery-style ramp meter: brackets and the
+    /// unfilled shell render in the default (white) foreground, the filled
+    /// portion in green. Empty = all white; full = all green.
+    /// </summary>
     private static string LevelMeter(double level)
     {
-        const string steps = "▁▂▃▄▅▆▇█";
+        const string ramp = "▁▂▃▄▅▆▇█";
         var db = 20 * Math.Log10(Math.Max(level, 1e-6));
-        var idx = (int)Math.Clamp((db + 50) / 6, 0, steps.Length - 1);
-        return steps[idx].ToString();
+        var t = Math.Clamp((db + 50) / 50, 0, 1);
+        var filled = Math.Clamp((int)Math.Round(t * ramp.Length), 0, ramp.Length);
+        var shell = ramp[filled..];
+
+        var green = Display.HistoryColor.Ok.Ansi;
+        var reset = Display.HistoryColor.Default.Ansi;
+        return $"[{green}{ramp[..filled]}{reset}{shell}]{reset}";
     }
 
     // ── Transcript panel ───────────────────────────────────────────

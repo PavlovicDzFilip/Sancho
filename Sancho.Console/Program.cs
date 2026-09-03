@@ -164,6 +164,7 @@ services.AddLogging(builder =>
 services.AddSingleton<ConsoleFormatter, RawConsoleFormatter>();
 services.AddSingleton(transcriptionOptions);
 services.AddSingleton<Display>();
+services.AddSingleton<MicLevelMonitor>();
 services.AddSingleton<AudioSourceFactory>();
 services.AddSingleton<RealtimeTranscriptionService>();
 services.AddSingleton<RecordingTranscriptionService>();

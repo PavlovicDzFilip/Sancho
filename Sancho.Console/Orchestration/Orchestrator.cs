@@ -12,6 +12,7 @@ public sealed class Orchestrator(
     TranscriptionOptions transcriptionOptions,
     ClaudeService claudeService,
     Display display,
+    MicLevelMonitor micMonitor,
     ILogger<Orchestrator> logger)
 {
     // Most recent ~30 s of audio is kept in the channel: a disconnect outage
@@ -25,6 +26,12 @@ public sealed class Orchestrator(
     private readonly List<string> _buffer = new();
     private bool _claudeIsReady;
     private string? _currentDelta;
+
+    // The status bar shows the transcription state plus a live mic suffix;
+    // the monitor loop re-renders it so signal loss appears without an event.
+    private string _statusBase = "";
+    private Display.HistoryColor _statusColor = Display.HistoryColor.Warn;
+    private bool _signalWarned;
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -65,13 +72,26 @@ public sealed class Orchestrator(
 
         // Render the transcript panel immediately so the task area is visible on startup.
         display.Transcript.Clear();
-        display.Transcript.SetStatus(
+        SetStatus(
             RecordingMode ? "recording: starting…" : "transcription: connecting…",
             Display.HistoryColor.Warn);
+
+        // The ALSA mixer knows for certain whether the mic-mute switch is on
+        // (the physical button toggles the Capture switch) — warn once at
+        // startup; the status bar tracks the live signal from here on.
+        var mutedCards = AlsaMixerCheck.FindMutedCaptureControls(logger);
+        if (mutedCards.Count > 0)
+        {
+            var cardHint = mutedCards[0].Replace("card ", "-c ");
+            display.History.AppendLine(
+                $"⚠ Microphone appears muted ({string.Join(", ", mutedCards)}) — unmute with: amixer {cardHint} sset Capture cap",
+                Display.HistoryColor.Warn);
+        }
 
         var claudeTask = ConsumeClaudeEventsAsync(claudeEvents, cts.Token);
         var transcribeTask = RunTranscriptionLoopAsync(
             channel.Reader.ReadAllAsync(cts.Token), captureCts, cts.Token);
+        var micTask = MonitorMicAsync(cts.Token);
 
         void OnCancelKeyPress(object? sender, System.ConsoleCancelEventArgs e)
         {
@@ -107,7 +127,7 @@ public sealed class Orchestrator(
             await Task.WhenAny(keyTask, cancelTask);
 
             await cts.CancelAsync();
-            await Task.WhenAll(captureTask, transcribeTask, claudeTask);
+            await Task.WhenAll(captureTask, transcribeTask, claudeTask, micTask);
         }
         finally
         {
@@ -214,7 +234,7 @@ public sealed class Orchestrator(
             switch (evt)
             {
                 case TranscriptionEvent.Recording(var path):
-                    display.Transcript.SetStatus("● recording", Display.HistoryColor.Ok);
+                    SetStatus("● recording", Display.HistoryColor.Ok);
                     display.History.AppendLine($"💾 Recording to {path}");
                     break;
 
@@ -237,12 +257,12 @@ public sealed class Orchestrator(
                     break;
 
                 case TranscriptionEvent.Connected:
-                    display.Transcript.SetStatus("transcription: connected", Display.HistoryColor.Ok);
+                    SetStatus("transcription: connected", Display.HistoryColor.Ok);
                     break;
 
                 case TranscriptionEvent.Reconnecting(var msg):
                     logger.LogWarning("Transcription reconnect: {Message}", msg);
-                    display.Transcript.SetStatus("transcription: reconnecting", Display.HistoryColor.Warn);
+                    SetStatus("transcription: reconnecting", Display.HistoryColor.Warn);
                     _currentDelta = null; // the server lost its partial transcript too
                     UpdateTranscript();
                     display.History.AppendLine($"⚠ {msg}");
@@ -250,7 +270,7 @@ public sealed class Orchestrator(
 
                 case TranscriptionEvent.Failed(var msg):
                     logger.LogError("Transcription failed: {Message}", msg);
-                    display.Transcript.SetStatus(
+                    SetStatus(
                         RecordingMode ? "recording: failed" : "transcription: failed",
                         Display.HistoryColor.Error);
                     display.History.AppendLine($"🛑 {msg}", Display.HistoryColor.Error);
@@ -263,6 +283,65 @@ public sealed class Orchestrator(
                     break;
             }
         }
+    }
+
+    // ── Status bar ────────────────────────────────────────────────
+
+    /// <summary>Sets the transcription-state part of the status bar; the live mic suffix is appended on render.</summary>
+    private void SetStatus(string text, Display.HistoryColor color)
+    {
+        _statusBase = text;
+        _statusColor = color;
+        RenderStatus();
+    }
+
+    /// <summary>Redraws the status bar: transcription state + live mic level.</summary>
+    private void RenderStatus()
+    {
+        var silent = micMonitor.IsSilent;
+        if (silent && !_signalWarned)
+        {
+            // One-time warning per silence episode — this catches the physical
+            // mute button and every other cause, on every platform.
+            _signalWarned = true;
+            display.History.AppendLine(
+                "⚠ No audio signal — is the microphone muted (e.g. the physical mute button) or unplugged?",
+                Display.HistoryColor.Warn);
+        }
+        else if (!silent)
+        {
+            _signalWarned = false;
+        }
+
+        var suffix = silent ? "   mic: no signal" : $"   mic: {LevelMeter(micMonitor.Level)}";
+        display.Transcript.SetStatus(
+            _statusBase + suffix,
+            silent ? Display.HistoryColor.Warn : _statusColor);
+    }
+
+    /// <summary>Re-renders the status bar once a second so signal loss appears without any event.</summary>
+    private async Task MonitorMicAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                RenderStatus();
+                await Task.Delay(1000, ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    /// <summary>Maps a 0..1 level to one meter character.</summary>
+    private static string LevelMeter(double level)
+    {
+        const string steps = "▁▂▃▄▅▆▇█";
+        var db = 20 * Math.Log10(Math.Max(level, 1e-6));
+        var idx = (int)Math.Clamp((db + 50) / 6, 0, steps.Length - 1);
+        return steps[idx].ToString();
     }
 
     // ── Transcript panel ───────────────────────────────────────────

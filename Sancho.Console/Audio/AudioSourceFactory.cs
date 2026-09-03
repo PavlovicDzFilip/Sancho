@@ -12,7 +12,8 @@ namespace Sancho.Console.Audio;
 /// </summary>
 public sealed class AudioSourceFactory(
     ILoggerFactory loggerFactory,
-    Display display)
+    Display display,
+    MicLevelMonitor micMonitor)
 {
     public IAudioSource Create()
     {
@@ -59,7 +60,7 @@ public sealed class AudioSourceFactory(
 
         return new MicrophoneAudioSource(selected, deviceName,
             loggerFactory.CreateLogger<MicrophoneAudioSource>(),
-            display);
+            display, micMonitor);
     }
 
     private IAudioSource CreateMacOsSource()
@@ -71,7 +72,7 @@ public sealed class AudioSourceFactory(
             ["-f", "avfoundation", "-i", $":{device.Index}"],
             fallbackInputArgs: null,
             loggerFactory.CreateLogger<FfmpegAudioSource>(),
-            display);
+            display, micMonitor);
     }
 
     private IAudioSource CreateLinuxSource()
@@ -83,7 +84,7 @@ public sealed class AudioSourceFactory(
             ["-f", "pulse", "-i", "default"],
             ["-f", "alsa", "-i", "default"],
             loggerFactory.CreateLogger<FfmpegAudioSource>(),
-            display);
+            display, micMonitor);
     }
 
     private static FfmpegDevices.Device PickDevice(IReadOnlyList<FfmpegDevices.Device> devices)

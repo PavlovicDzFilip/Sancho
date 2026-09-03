@@ -22,6 +22,7 @@ public sealed class FfmpegAudioSource : IAudioSource, IDisposable
     private readonly string[]? _fallbackInputArgs;
     private readonly ILogger<FfmpegAudioSource> _logger;
     private readonly Display _display;
+    private readonly MicLevelMonitor _micMonitor;
 
     private Process? _process;
     private Task? _stderrTask;
@@ -31,13 +32,15 @@ public sealed class FfmpegAudioSource : IAudioSource, IDisposable
         string[] inputArgs,
         string[]? fallbackInputArgs,
         ILogger<FfmpegAudioSource> logger,
-        Display display)
+        Display display,
+        MicLevelMonitor micMonitor)
     {
         _deviceDescription = deviceDescription;
         _inputArgs = inputArgs;
         _fallbackInputArgs = fallbackInputArgs;
         _logger = logger;
         _display = display;
+        _micMonitor = micMonitor;
     }
 
     /// <summary>
@@ -192,6 +195,7 @@ public sealed class FfmpegAudioSource : IAudioSource, IDisposable
 
             var chunk = new byte[read];
             Buffer.BlockCopy(buffer, 0, chunk, 0, read);
+            _micMonitor.Update(chunk);
 
             // TryWrite keeps the capture thread non-blocking, matching the
             // behaviour when the channel is full.

@@ -16,15 +16,17 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
     private const int SampleRate = 24000;
     private readonly ILogger<MicrophoneAudioSource> _logger;
     private readonly Display _display;
+    private readonly MicLevelMonitor _micMonitor;
     private WaveInEvent? _waveIn;
 
     public MicrophoneAudioSource(int deviceNumber, string deviceName,
-        ILogger<MicrophoneAudioSource> logger, Display display)
+        ILogger<MicrophoneAudioSource> logger, Display display, MicLevelMonitor micMonitor)
     {
         _deviceNumber = deviceNumber;
         _deviceName = deviceName;
         _logger = logger;
         _display = display;
+        _micMonitor = micMonitor;
     }
 
     /// <inheritdoc />
@@ -56,6 +58,7 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
 
             var chunk = new byte[e.BytesRecorded];
             Array.Copy(e.Buffer, chunk, e.BytesRecorded);
+            _micMonitor.Update(chunk);
 
             // TryWrite returns false if the channel is full (bounded) or
             // completed — we skip the chunk in that case to avoid blocking

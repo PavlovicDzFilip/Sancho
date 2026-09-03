@@ -45,7 +45,11 @@ public sealed class LocalTranscriptionService(
 
         try
         {
-            await foreach (var evt in events.Reader.ReadAllAsync(ct))
+            // Read without the token: the producer ends the stream by
+            // completing the channel once it has handled cancellation itself.
+            // (C# forbids yield return inside a try with a catch clause, so an
+            // OCE must not originate on this side of the channel.)
+            await foreach (var evt in events.Reader.ReadAllAsync())
                 yield return evt;
         }
         finally

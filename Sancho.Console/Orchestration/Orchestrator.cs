@@ -32,6 +32,7 @@ public sealed class Orchestrator(
     private string _statusBase = "";
     private Display.HistoryColor _statusColor = Display.HistoryColor.Warn;
     private bool _signalWarned;
+    private bool _clipWarned;
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -299,6 +300,8 @@ public sealed class Orchestrator(
     private void RenderStatus()
     {
         var silent = micMonitor.IsSilent;
+        var clipped = micMonitor.IsClipped;
+
         if (silent && !_signalWarned)
         {
             // One-time warning per silence episode — this catches the physical
@@ -313,10 +316,27 @@ public sealed class Orchestrator(
             _signalWarned = false;
         }
 
-        var suffix = silent ? "   mic: no signal" : $"   mic: {LevelMeter(micMonitor.Level)}";
+        if (clipped && !_clipWarned)
+        {
+            // One-time warning per clipping episode. A signal pinned at full
+            // scale is not idle room audio — it is clipping or a broken
+            // capture stage (known: AMD ACP DMIC driver bug on Ryzen AI 300).
+            _clipWarned = true;
+            display.History.AppendLine(
+                "⚠ Microphone signal is pinned at full scale (clipped) — on Ryzen AI 300 laptops this is the known broken AMD ACP DMIC driver. Use a USB or 3.5mm headset mic and restart sancho.",
+                Display.HistoryColor.Warn);
+        }
+        else if (!clipped)
+        {
+            _clipWarned = false;
+        }
+
+        var suffix = silent ? "   mic: no signal"
+            : clipped ? "   mic: clipped signal"
+            : $"   mic: {LevelMeter(micMonitor.Level)}";
         display.Transcript.SetStatus(
             _statusBase + suffix,
-            silent ? Display.HistoryColor.Warn : _statusColor);
+            silent || clipped ? Display.HistoryColor.Warn : _statusColor);
     }
 
     /// <summary>Re-renders the status bar once a second so signal loss appears without any event.</summary>

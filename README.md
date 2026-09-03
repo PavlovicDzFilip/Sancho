@@ -69,6 +69,10 @@ Keys: `apiKey` (prompted on first run in `openai` mode) and `transcription` (`op
 
 Precedence: defaults < config file < `OPENAI_API_KEY` env var < flags (`--api-key`, `--transcription`).
 
+## Known issues
+
+- **Built-in microphone on AMD Ryzen AI 300 laptops (kernel ≥ 6.16):** the `snd_acp_pdm` driver feeds a clipped, full-scale signal instead of real audio — an upstream driver bug ([Framework Community thread](https://community.frame.work/t/laptop13-ryzen-ai-340-internal-mic-in-fedora42-doesnt-work/75748), [sof-project#5714](https://github.com/thesofproject/linux/issues/5714)). Sancho detects the clipped signal and warns; use a USB or 3.5mm headset mic until a kernel/driver fix lands.
+
 ## Building & Releasing
 
 Requires the .NET 10 SDK.

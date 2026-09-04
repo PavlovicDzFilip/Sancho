@@ -20,6 +20,8 @@ public static class HelpText
           sancho config set <key> <value> Persist one config key
 
         Options:
+          --agent <name>                   Agent backend: claude (default) — cursor, codex and
+                                           hermes coming soon
           --meeting                        Transcribe your mic + the system output (other meeting
                                            participants) — lines labeled Me/Others; Windows only
           --notes                          Transcribe to sancho-notes-YYYY-MM-DD.md in the current
@@ -40,6 +42,6 @@ public static class HelpText
 
         Config:
           File:  ~/.sancho/config.json    (SANCHO_CONFIG_DIR overrides the directory)
-          Keys:  (none yet — reserved for future settings)
+          Keys:  agent                    (claude; cursor/codex/hermes coming soon)
         """;
 }

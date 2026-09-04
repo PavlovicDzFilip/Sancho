@@ -6,6 +6,7 @@ public sealed class UsageError(string message) : Exception(message);
 /// <summary>Parsed command line for <c>sancho</c>.</summary>
 public sealed record CliArgs(
     bool Continue,
+    string? Agent,
     string? Command,
     string[] CommandArgs,
     bool ShowHelp,
@@ -16,12 +17,13 @@ public sealed record CliArgs(
 {
     /// <summary>
     /// Parses the command line: <c>-c</c>, <c>--log</c>, <c>--notes</c>,
-    /// <c>--meeting</c>, and the <c>config</c> subcommand. Unknown
-    /// flags/commands throw <see cref="UsageError"/>.
+    /// <c>--meeting</c>, <c>--agent</c>, and the <c>config</c> subcommand.
+    /// Unknown flags/commands throw <see cref="UsageError"/>.
     /// </summary>
     public static CliArgs Parse(string[] args)
     {
         var continueSession = false;
+        string? agent = null;
         var log = false;
         var notes = false;
         var meeting = false;
@@ -33,9 +35,9 @@ public sealed record CliArgs(
             switch (arg)
             {
                 case "-h" or "--help":
-                    return new CliArgs(false, null, [], true, false, false, false, false);
+                    return new CliArgs(false, null, null, [], true, false, false, false, false);
                 case "-v" or "--version":
-                    return new CliArgs(false, null, [], false, true, false, false, false);
+                    return new CliArgs(false, null, null, [], false, true, false, false, false);
                 case "-c" or "--continue":
                     continueSession = true;
                     break;
@@ -51,11 +53,27 @@ public sealed record CliArgs(
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
                     {
-                        var (name, _) = SplitFlag(arg);
-                        throw new UsageError($"Unknown option '{name}'.");
-                    }
+                        var (name, inlineValue) = SplitFlag(arg);
+                        if (name == "--agent")
+                        {
+                            var value = inlineValue;
+                            if (value is null && i + 1 < args.Length &&
+                                !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                            {
+                                value = args[++i];
+                            }
 
-                    positional.Add(arg);
+                            agent = value ?? throw new UsageError("'--agent' requires a value.");
+                        }
+                        else
+                        {
+                            throw new UsageError($"Unknown option '{name}'.");
+                        }
+                    }
+                    else
+                    {
+                        positional.Add(arg);
+                    }
                     break;
             }
         }
@@ -64,10 +82,10 @@ public sealed record CliArgs(
         {
             if (positional[0] is not "config")
                 throw new UsageError($"Unknown command '{positional[0]}'.");
-            return new CliArgs(continueSession, "config", positional.Skip(1).ToArray(), false, false, log, notes, meeting);
+            return new CliArgs(continueSession, agent, "config", positional.Skip(1).ToArray(), false, false, log, notes, meeting);
         }
 
-        return new CliArgs(continueSession, null, [], false, false, log, notes, meeting);
+        return new CliArgs(continueSession, agent, null, [], false, false, log, notes, meeting);
     }
 
     private static (string Name, string? Value) SplitFlag(string arg)

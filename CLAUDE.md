@@ -22,18 +22,19 @@
 - Config: `Config\SanchoPaths.cs` + `Config\ConfigStore.cs` — user config in `~/.sancho/config.json`, read via source-generated System.Text.Json (`SanchoConfigJsonContext`).
 - Audio capture: `IAudioSource` → `MicrophoneAudioSource` (NAudio, Windows) / `FfmpegAudioSource` (ffmpeg subprocess: avfoundation on macOS, pulse with ALSA fallback on Linux) / `LoopbackAudioSource` (WASAPI loopback, Windows — `--meeting` mode)
 - Transcription: `LocalTranscriptionService` (the only backend — on-device sherpa-onnx offline whisper small.en int8 + silero VAD; utterances arrive as `Completed` events at utterance end, no live deltas; model files downloaded to `~/.sancho/models/` on first use; `LocalSttModels` handles provisioning). The OpenAI and record backends were removed — sancho is fully offline (ADR-0004). Engine choice: `docs/feature/local-stt/ADR-0003-offline-whisper-vad.md` (supersedes ADR-0002; model size may be revisited).
-- Claude integration: `ClaudeService` (subprocess via `claude --print --input-format stream-json --output-format stream-json`)
+- Agent integration: `Services\Agents\` — `AgentService` abstraction over the selected CLI, all backends emit the shared `AgentEvent` stream; `ClaudeCodeAgentService` drives any Claude-Code-protocol CLI (subprocess via `<agent> --print --input-format stream-json --output-format stream-json`); the `agent` config key (or `--agent` flag) selects the backend (claude only for now; cursor/codex/hermes planned). The agent factory in Program.cs verifies the executable exists and is logged in before the orchestrator starts.
 - Pipeline: mic → Channel<byte[]> → `LocalTranscriptionService` → Channel<string> → Claude CLI
 
 ## Configuration
-- File: `~/.sancho/config.json` (`SANCHO_CONFIG_DIR` env var overrides the directory). Keys: none yet — the file is reserved for future settings (`sancho config get/set` still exist for later).
-- `--log` is a one-off override and is never persisted; only `sancho config set` persists (once keys exist).
+- File: `~/.sancho/config.json` (`SANCHO_CONFIG_DIR` env var overrides the directory). Keys: `agent` (default `claude`; cursor/codex/hermes planned).
+- Precedence: defaults < config file < flags. `--log` is a one-off override and is never persisted; only `sancho config set` persists.
 - System prompt: `.sancho.md` in the current directory (the directory sancho is run from). If the file is missing, sancho creates it with a default prompt and prints a note that it can be edited.
 
 ## CLI Surface
 - `sancho` — start listening in the current directory
 - `sancho --notes` — dictation mode: transcriptions append to `sancho-notes-YYYY-MM-DD.md` in the current directory; Claude is never involved (no CLI check, no session, no `.sancho.md`)
 - `sancho --meeting` — meeting mode: transcribes the mic and the system output (other participants) as two whisper streams sharing one recognizer; output lines are labeled `Me:`/`Others:`; Windows-only for now (WASAPI loopback), Linux/macOS later
+- `sancho --agent <name>` — one-off agent override (default `claude`); persisted via `sancho config set agent <name>`
 - `sancho --continue` / `-c` — session picker, resumes a prior Claude session
 - `sancho config get [key]` / `sancho config set <key> <value>` — view/persist config
 - `sancho --help`, `sancho --version`

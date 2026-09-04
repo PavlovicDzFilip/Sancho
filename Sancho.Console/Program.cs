@@ -8,7 +8,7 @@ using Sancho.Console.Cli;
 using Sancho.Console.Config;
 using Sancho.Console.Logging;
 using Sancho.Console.Orchestration;
-using Sancho.Console.Services;
+using Sancho.Console.Agents;
 using Sancho.Console.Transcription;
 using Spectre.Console;
 // Display is in the root namespace
@@ -70,24 +70,22 @@ if (cliArgs.Command is "config")
     }
 }
 
-static string? ChooseSession(string targetDirectory)
+static string? ChooseSession(IReadOnlyList<AgentService.SessionSummary> sessions)
 {
-    var sessions = ClaudeService.ListSessions(targetDirectory);
-
     if (sessions.Count == 0)
     {
         AnsiConsole.MarkupLine("[yellow]No previous sessions found — starting fresh.[/]");
         return null;
     }
 
-    var choices = new List<ClaudeService.SessionSummary>
+    var choices = new List<AgentService.SessionSummary>
     {
         new(string.Empty, DateTime.MinValue, null, "Start a fresh session")
     };
     choices.AddRange(sessions);
 
     var chosen = AnsiConsole.Prompt(
-        new SelectionPrompt<ClaudeService.SessionSummary>()
+        new SelectionPrompt<AgentService.SessionSummary>()
             .Title("Choose a session to continue")
             .UseConverter(s => s.Id.Length == 0
                 ? s.Preview
@@ -95,6 +93,18 @@ static string? ChooseSession(string targetDirectory)
             .AddChoices(choices));
 
     return chosen.Id.Length == 0 ? null : chosen.Id;
+}
+
+/// <summary>
+/// Creates the agent backend. The factory guarantees a usable executable:
+/// not installed or not logged in fails here, before the orchestrator starts.
+/// </summary>
+static ClaudeCodeAgentService CreateAgent(string agentName, string? resumeSessionId, IServiceProvider sp)
+{
+    ClaudeCodeAgentService.VerifyAvailable(agentName);
+    return new ClaudeCodeAgentService(
+        agentName, null, resumeSessionId,
+        sp.GetRequiredService<ILogger<ClaudeCodeAgentService>>());
 }
 
 // ── Run path ───────────────────────────────────────────────────────
@@ -107,19 +117,16 @@ async Task<int> Run(LogFileWriter? logFile)
         return 2;
     }
 
-    // ── Verify prerequisites ──────────────────────────────────────────
-    // Notes mode never touches Claude, so the CLI isn't required there.
-    if (!cliArgs.Notes)
+    // ── Resolve configuration (defaults < ~/.sancho/config.json < flags) ──
+    var stored = ConfigStore.Load();
+
+    // The agent backend: config key or --agent flag; claude is the default.
+    // More agents (cursor, codex, hermes) land behind the same seam later.
+    var agentName = (cliArgs.Agent ?? stored.Agent ?? "claude").ToLowerInvariant();
+    if (agentName is not "claude")
     {
-        try
-        {
-            ClaudeService.VerifyClaudeAvailable();
-        }
-        catch (InvalidOperationException ex)
-        {
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
-            return 2;
-        }
+        AnsiConsole.MarkupLine($"[red]Agent '{agentName}' is not supported yet. Use 'claude'.[/]");
+        return 2;
     }
 
     // ffmpeg is the capture backend on Linux/macOS; Windows uses the bundled
@@ -139,12 +146,13 @@ async Task<int> Run(LogFileWriter? logFile)
 
     var targetDir = Directory.GetCurrentDirectory();
 
-    // Notes mode only transcribes — no system prompt file, no Claude session.
+    // Notes mode only transcribes — no system prompt file, no agent session.
+    // The agent factory (below) verifies the CLI is installed and logged in.
     if (!cliArgs.Notes)
     {
         try
         {
-            var (promptPath, promptCreated) = ClaudeService.EnsureSystemPrompt(targetDir);
+            var (promptPath, promptCreated) = ClaudeCodeAgentService.EnsureSystemPrompt(targetDir);
             if (promptCreated)
                 AnsiConsole.MarkupLine(
                     $"[grey]Created {Path.GetFileName(promptPath)} with the default system prompt — edit it to customize.[/]");
@@ -155,9 +163,6 @@ async Task<int> Run(LogFileWriter? logFile)
             return 2;
         }
     }
-
-    // ── Resolve configuration (defaults < ~/.sancho/config.json < env < flags) ──
-    var stored = ConfigStore.Load();
 
     // ── Composition root ──────────────────────────────────────────────
     var services = new ServiceCollection();
@@ -204,23 +209,33 @@ async Task<int> Run(LogFileWriter? logFile)
     }
     else
     {
-        var resumeSessionId = cliArgs.Continue ? ChooseSession(targetDir) : null;
+        var resumeSessionId = cliArgs.Continue
+            ? ChooseSession(ClaudeCodeAgentService.ListSessions(
+                ClaudeCodeAgentService.DefaultSessionRoot(), targetDir))
+            : null;
 
-        services.AddSingleton<ClaudeService>(sp =>
-            new ClaudeService(
-                resumeSessionId,
-                sp.GetRequiredService<ILogger<ClaudeService>>()));
+        services.AddSingleton<ClaudeCodeAgentService>(sp =>
+            CreateAgent(agentName, resumeSessionId, sp));
         services.AddSingleton<Orchestrator>();
     }
 
-    using var provider = services.BuildServiceProvider();
+    try
+    {
+        using var provider = services.BuildServiceProvider();
 
-    using var cts = new CancellationTokenSource();
-    var orchestrator = provider.GetRequiredService<Orchestrator>();
+        using var cts = new CancellationTokenSource();
+        var orchestrator = provider.GetRequiredService<Orchestrator>();
 
-    await orchestrator.RunAsync(cts.Token);
+        await orchestrator.RunAsync(cts.Token);
 
-    return 0;
+        return 0;
+    }
+    catch (InvalidOperationException ex)
+    {
+        // e.g. the agent factory's VerifyAvailable failed.
+        AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
+        return 2;
+    }
 }
 
 LogFileWriter? logFile = null;

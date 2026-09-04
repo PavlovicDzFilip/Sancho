@@ -1,9 +1,9 @@
 using System.Text;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using Sancho.Console.Agents;
 using Sancho.Console.Audio;
 using Sancho.Console.Cli;
-using Sancho.Console.Services;
 using Sancho.Console.Transcription;
 
 namespace Sancho.Console.Orchestration;
@@ -12,7 +12,7 @@ public sealed class Orchestrator(
     AudioSourceFactory audioSourceFactory,
     LocalTranscriptionService transcriptionService,
     CliArgs cliArgs,
-    ClaudeService? claudeService,
+    AgentService? agentService,
     Display display,
     MicLevelMonitor micMonitor,
     ILogger<Orchestrator> logger)
@@ -24,10 +24,10 @@ public sealed class Orchestrator(
 
     /// <summary>
     /// True when <c>--notes</c> was passed: transcriptions append to a notes
-    /// file in the current directory and Claude (null in this mode) is never
-    /// involved.
+    /// file in the current directory and the agent (null in this mode) is
+    /// never involved.
     /// </summary>
-    private bool NotesMode => claudeService is null;
+    private bool NotesMode => agentService is null;
 
     /// <summary>True when <c>--meeting</c> was passed: mic + system output.</summary>
     private bool MeetingMode => cliArgs.Meeting;
@@ -36,7 +36,7 @@ public sealed class Orchestrator(
 
     private readonly object _bufferLock = new();
     private readonly List<string> _buffer = new();
-    private bool _claudeIsReady;
+    private bool _agentIsReady;
     private string? _currentDelta;
 
     // The status bar shows the transcription state plus a live mic suffix;
@@ -95,7 +95,7 @@ public sealed class Orchestrator(
         }
         else
         {
-            display.History.AppendLine("🎤 Live transcription + Claude assistant started.");
+            display.History.AppendLine("🎤 Live transcription + assistant started.");
             display.History.AppendLine("   Flags: --continue / -c   pick a previous session to resume");
             display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
         }
@@ -103,7 +103,7 @@ public sealed class Orchestrator(
         if (MeetingMode)
             display.History.AppendLine("🔊 Meeting mode — mic + system output, lines labeled Me/Others.");
 
-        if (claudeService is { ContinueSession: true })
+        if (agentService is { ContinueSession: true })
             PrintContinuedSession();
 
         // Render the transcript panel immediately so the task area is visible on startup.
@@ -128,8 +128,8 @@ public sealed class Orchestrator(
         var loopbackTask = loopback is null
             ? null
             : loopback.CaptureAsync(loopbackChannel!.Writer, captureCts.Token);
-        var claudeEvents = claudeService?.RunAsync(cts.Token);
-        var claudeTask = claudeEvents is null ? null : ConsumeClaudeEventsAsync(claudeEvents, cts.Token);
+        var agentEvents = agentService?.RunAsync(cts.Token);
+        var agentTask = agentEvents is null ? null : ConsumeAgentEventsAsync(agentEvents, cts.Token);
         var transcribeTask = MeetingMode
             ? RunMeetingTranscriptionLoopAsync(
                 channel.Reader.ReadAllAsync(cts.Token),
@@ -176,8 +176,8 @@ public sealed class Orchestrator(
             await Task.WhenAll(captureTask, transcribeTask, micTask);
             if (loopbackTask is not null)
                 await loopbackTask;
-            if (claudeTask is not null)
-                await claudeTask;
+            if (agentTask is not null)
+                await agentTask;
         }
         finally
         {
@@ -192,14 +192,14 @@ public sealed class Orchestrator(
     private void PrintContinuedSession()
     {
         // Show the full previous session, in order, untruncated.
-        var messages = claudeService!.GetSessionMessages();
+        var messages = agentService!.GetSessionMessages();
         if (messages.Count == 0)
         {
             display.History.AppendLine("   (no prior session found)", Display.HistoryColor.Dim);
             return;
         }
 
-        display.History.AppendLine("── Continuing last session ──", Display.HistoryColor.Dim);
+        display.History.AppendLine("── Continuing session ──", Display.HistoryColor.Dim);
         foreach (var (isUser, text) in messages)
         {
             if (isUser)
@@ -209,10 +209,10 @@ public sealed class Orchestrator(
         }
     }
 
-    // ── Claude event consumer ──────────────────────────────────────
+    // ── Agent event consumer ───────────────────────────────────────
 
-    private async Task ConsumeClaudeEventsAsync(
-        IAsyncEnumerable<ClaudeEvent> events, CancellationToken ct)
+    private async Task ConsumeAgentEventsAsync(
+        IAsyncEnumerable<AgentEvent> events, CancellationToken ct)
     {
         try
         {
@@ -220,47 +220,47 @@ public sealed class Orchestrator(
             {
                 switch (evt)
                 {
-                    case ClaudeEvent.Ready:
+                    case AgentEvent.Ready:
                         lock (_bufferLock)
-                            _claudeIsReady = true;
+                            _agentIsReady = true;
                         TryFlushBuffer();
                         break;
 
-                    case ClaudeEvent.TurnStart:
+                    case AgentEvent.TurnStart:
                         display.History.AppendLine("🤖", Display.HistoryColor.Claude);
                         break;
 
-                    case ClaudeEvent.AssistantText(var text):
+                    case AgentEvent.AssistantText(var text):
                         display.History.AppendLine(text, color: Display.HistoryColor.Claude);
                         break;
 
-                    case ClaudeEvent.ToolUse(var name, var preview):
+                    case AgentEvent.ToolUse(var name, var preview):
                         display.History.AppendLine($"🔧 {name}: {preview}", Display.HistoryColor.Dim);
                         break;
 
-                    case ClaudeEvent.ToolResult(var toolId, var isError):
+                    case AgentEvent.ToolResult(var toolId, var isError):
                         display.History.AppendLine(
                             $"tool {toolId}… {(isError ? "✗" : "✓")}",
                             color: Display.HistoryColor.Dim);
                         break;
 
-                    case ClaudeEvent.TurnComplete:
+                    case AgentEvent.TurnComplete:
                         break;
 
-                    case ClaudeEvent.Status(var msg, _) when msg.StartsWith(
+                    case AgentEvent.Status(var msg, _) when msg.StartsWith(
                         "[claude-code:unrecognized_model]", StringComparison.Ordinal):
                         // Claude Code's model-registry warning when a third-party backend
                         // model id (e.g. DeepSeek) is configured — benign, keep it out of
                         // the transcript but still available at Debug verbosity.
-                        logger.LogDebug("Ignored claude stderr diagnostic: {Msg}", msg);
+                        logger.LogDebug("Ignored agent stderr diagnostic: {Msg}", msg);
                         break;
 
-                    case ClaudeEvent.Status(var msg, _):
+                    case AgentEvent.Status(var msg, _):
                         display.History.AppendLine(msg);
                         break;
 
-                    case ClaudeEvent.Error(var msg):
-                        logger.LogError("Claude error: {Msg}", msg);
+                    case AgentEvent.Error(var msg):
+                        logger.LogError("Agent error: {Msg}", msg);
                         display.History.AppendLine($"⚠ {msg}");
                         break;
                 }
@@ -474,7 +474,7 @@ public sealed class Orchestrator(
     private void UpdateTranscript()
     {
         // Snapshot _buffer under lock to avoid collection-modified-during-enumeration
-        // when TryFlushBuffer clears the buffer concurrently from the Claude event loop.
+        // when TryFlushBuffer clears the buffer concurrently from the agent event loop.
         string[] snapshot;
         lock (_bufferLock)
             snapshot = _buffer.ToArray();
@@ -488,7 +488,7 @@ public sealed class Orchestrator(
         string? combined;
         lock (_bufferLock)
         {
-            if (!_claudeIsReady)
+            if (!_agentIsReady)
                 return;
 
             combined = string.Join(Environment.NewLine, _buffer);
@@ -499,8 +499,8 @@ public sealed class Orchestrator(
                     display.History.AppendLine($"💬 {line}");
 
                 UpdateTranscript(); // clears the queued lines and restores the idle hint
-                claudeService!.Send(combined);
-                _claudeIsReady = false;
+                agentService!.Send(combined);
+                _agentIsReady = false;
             }
         }
     }

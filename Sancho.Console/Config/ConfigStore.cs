@@ -8,11 +8,8 @@ public sealed class ConfigException(string message) : Exception(message);
 /// <summary>Loads and saves Sancho's user config (<c>~/.sancho/config.json</c>).</summary>
 public static class ConfigStore
 {
-    /// <summary>
-    /// Keys accepted by <c>sancho config get/set</c>. Empty for now — the
-    /// config file is reserved for future settings.
-    /// </summary>
-    public static readonly string[] KnownKeys = [];
+    /// <summary>Keys accepted by <c>sancho config get/set</c>.</summary>
+    public static readonly string[] KnownKeys = ["agent"];
 
     /// <summary>
     /// Loads the config file. A missing file yields defaults; malformed JSON
@@ -49,14 +46,19 @@ public static class ConfigStore
 
     /// <summary>Returns a copy of <paramref name="config"/> with one key set.</summary>
     /// <remarks>An empty value clears the key (stores <c>null</c>).</remarks>
-    public static SanchoConfig WithKey(SanchoConfig config, string key, string? value) =>
-        throw new ConfigException($"Unknown config key '{key}'. {ValidKeysHint}");
+    public static SanchoConfig WithKey(SanchoConfig config, string key, string? value) => key switch
+    {
+        "agent" => config with { Agent = EmptyToNull(value) },
+        _ => throw new ConfigException($"Unknown config key '{key}'. Valid keys: {string.Join(", ", KnownKeys)}."),
+    };
 
     /// <summary>Reads one key from <paramref name="config"/>.</summary>
-    public static string? GetValue(SanchoConfig config, string key) =>
-        throw new ConfigException($"Unknown config key '{key}'. {ValidKeysHint}");
+    public static string? GetValue(SanchoConfig config, string key) => key switch
+    {
+        "agent" => config.Agent,
+        _ => throw new ConfigException($"Unknown config key '{key}'. Valid keys: {string.Join(", ", KnownKeys)}."),
+    };
 
-    private static string ValidKeysHint => KnownKeys.Length > 0
-        ? $"Valid keys: {string.Join(", ", KnownKeys)}."
-        : "No config keys are defined yet.";
+    private static string? EmptyToNull(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
 }

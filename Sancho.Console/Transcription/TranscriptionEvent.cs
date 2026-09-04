@@ -2,13 +2,10 @@ namespace Sancho.Console.Transcription;
 
 /// <summary>
 /// Events yielded by <see cref="ITranscriptionService"/>:
-/// transcription output, recording status, and connection status.
+/// transcription output and connection status.
 /// </summary>
 public abstract record TranscriptionEvent
 {
-    /// <summary>Audio is being recorded to a local file — no transcription is running.</summary>
-    public sealed record Recording(string FilePath) : TranscriptionEvent;
-
     /// <summary>A partial transcription delta — display inline as the user speaks.</summary>
     public sealed record Delta(string Text) : TranscriptionEvent;
 
@@ -16,16 +13,14 @@ public abstract record TranscriptionEvent
     public sealed record Completed(string Transcript) : TranscriptionEvent;
 
     /// <summary>
-    /// Speech detected in the microphone — local mode via silero VAD, openai
-    /// mode via the server's VAD turn detection. Drives the "hearing…"
-    /// indicator while the user is still talking.
+    /// Speech detected in the microphone via silero VAD — drives the
+    /// "hearing…" hint while the user is still talking.
     /// </summary>
     public sealed record SpeechDetected : TranscriptionEvent;
 
     /// <summary>
-    /// An utterance ended and its decode has started (local mode), or the
-    /// server-VAD speech pause fired (openai mode) — drives the
-    /// "transcribing…" indicator until <see cref="Completed"/> arrives.
+    /// An utterance ended and its whisper decode has started — drives the
+    /// "transcribing…" hint until <see cref="Completed"/> arrives.
     /// </summary>
     public sealed record Decoding : TranscriptionEvent;
 

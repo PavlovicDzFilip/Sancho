@@ -145,38 +145,6 @@ async Task<int> Run(LogFileWriter? logFile)
     // ── Resolve configuration (defaults < ~/.sancho/config.json < env < flags) ──
     var stored = ConfigStore.Load();
 
-    // Transcription backend: openai is the default; record writes a local WAV;
-    // local transcribes on-device with sherpa-onnx (no cloud round-trip).
-    var mode = (cliArgs.Transcription ?? stored.Transcription ?? TranscriptionOptions.OpenAi)
-        .ToLowerInvariant();
-    if (mode is not (TranscriptionOptions.OpenAi or TranscriptionOptions.Record or TranscriptionOptions.Local))
-    {
-        AnsiConsole.MarkupLine($"[red]Unknown transcription mode '{mode}'. Use 'openai', 'record' or 'local'.[/]");
-        return 2;
-    }
-
-    var apiKey = cliArgs.ApiKey
-        ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY")
-        ?? stored.ApiKey;
-
-    // Only openai mode needs a key for transcription; local/record use it
-    // (if present) just for OpenAI-generated session titles.
-    if (mode == TranscriptionOptions.OpenAi && string.IsNullOrWhiteSpace(apiKey))
-    {
-        // First run in openai mode: ask once, store it, and reuse it from ~/.sancho/config.json.
-        apiKey = AnsiConsole.Prompt(
-            new TextPrompt<string>("OpenAI API key not found — enter it now (https://platform.openai.com/api-keys):")
-                .Secret()
-                .Validate(value => string.IsNullOrWhiteSpace(value)
-                    ? ValidationResult.Error("API key cannot be empty.")
-                    : ValidationResult.Success()));
-
-        ConfigStore.Save(ConfigStore.WithKey(stored, "apiKey", apiKey));
-        AnsiConsole.MarkupLine($"[grey]Stored in {SanchoPaths.ConfigFile}[/]");
-    }
-
-    var transcriptionOptions = new TranscriptionOptions { ApiKey = apiKey ?? "", Mode = mode };
-
     // ── Composition root ──────────────────────────────────────────────
     var services = new ServiceCollection();
     services.AddLogging(builder =>
@@ -199,30 +167,18 @@ async Task<int> Run(LogFileWriter? logFile)
         services.AddSingleton<ILoggerProvider>(new FileLogProvider(logFile));
     services.AddSingleton<ConsoleFormatter, RawConsoleFormatter>();
     services.AddSingleton(stored);
-    services.AddSingleton(transcriptionOptions);
     services.AddSingleton<Display>();
     services.AddSingleton<MicLevelMonitor>();
     services.AddSingleton<AudioSourceFactory>();
-    services.AddSingleton<RealtimeTranscriptionService>();
-    services.AddSingleton<RecordingTranscriptionService>();
     services.AddSingleton<LocalSttModels>();
-    services.AddSingleton<LocalTranscriptionService>();
-    services.AddSingleton<ITranscriptionService>(sp => mode switch
-    {
-        TranscriptionOptions.Record => sp.GetRequiredService<RecordingTranscriptionService>(),
-        TranscriptionOptions.Local => sp.GetRequiredService<LocalTranscriptionService>(),
-        _ => sp.GetRequiredService<RealtimeTranscriptionService>(),
-    });
-    services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromSeconds(45) });
-    services.AddSingleton<SessionTitleService>();
+    services.AddSingleton<ITranscriptionService, LocalTranscriptionService>();
 
     var resumeSessionId = cliArgs.Continue ? ChooseSession(targetDir) : null;
 
     services.AddSingleton<ClaudeService>(sp =>
         new ClaudeService(
             resumeSessionId,
-            sp.GetRequiredService<ILogger<ClaudeService>>(),
-            sp.GetRequiredService<SessionTitleService>()));
+            sp.GetRequiredService<ILogger<ClaudeService>>()));
     services.AddSingleton<Orchestrator>();
 
     using var provider = services.BuildServiceProvider();

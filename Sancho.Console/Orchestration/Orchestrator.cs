@@ -9,7 +9,6 @@ namespace Sancho.Console.Orchestration;
 public sealed class Orchestrator(
     AudioSourceFactory audioSourceFactory,
     ITranscriptionService transcriptionService,
-    TranscriptionOptions transcriptionOptions,
     ClaudeService claudeService,
     Display display,
     MicLevelMonitor micMonitor,
@@ -19,8 +18,6 @@ public sealed class Orchestrator(
     // buffers recent speech for replay without growing memory forever.
     private const int BufferedAudioSeconds = 30;
     private const int AudioChunkMilliseconds = 100; // matches the capture sources' chunk size
-
-    private bool RecordingMode => transcriptionOptions.Mode == TranscriptionOptions.Record;
 
     private readonly object _bufferLock = new();
     private readonly List<string> _buffer = new();
@@ -59,34 +56,19 @@ public sealed class Orchestrator(
         var captureTask = audioSource.CaptureAsync(channel.Writer, captureCts.Token);
         var claudeEvents = claudeService.RunAsync(cts.Token);
 
-        if (RecordingMode)
-        {
-            display.History.AppendLine("🎤 Listening — your voice is recorded locally as a WAV file.");
-            display.History.AppendLine("   Speech-to-text is not wired up yet, so Claude won't hear you.");
-            display.History.AppendLine("   Flags: --continue / -c   pick a previous session to resume");
-            display.History.AppendLine("   Press CTRL + C to stop and save the recording.");
-        }
-        else
-        {
-            display.History.AppendLine("🎤 Live transcription + Claude assistant started.");
-            display.History.AppendLine("   Flags: --continue / -c   pick a previous session to resume");
-            display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
-        }
+        display.History.AppendLine("🎤 Live transcription + Claude assistant started.");
+        display.History.AppendLine("   Flags: --continue / -c   pick a previous session to resume");
+        display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
 
         if (claudeService.ContinueSession)
             PrintContinuedSession();
 
         // Render the transcript panel immediately so the task area is visible on startup.
         display.Transcript.Clear();
-        SetStatus(
-            RecordingMode ? "recording: starting…" : "transcription: connecting…",
-            Display.HistoryColor.Warn);
+        SetStatus("transcription: connecting…", Display.HistoryColor.Warn);
 
-        if (!RecordingMode)
-        {
-            SetHint("🎤 Start talking…", Display.HistoryColor.Dim);
-            UpdateTranscript();
-        }
+        SetHint("🎤 Start talking…", Display.HistoryColor.Dim);
+        UpdateTranscript();
 
         // The ALSA mixer knows for certain whether the mic-mute switch is on
         // (the physical button toggles the Capture switch) — warn once at
@@ -245,11 +227,6 @@ public sealed class Orchestrator(
         {
             switch (evt)
             {
-                case TranscriptionEvent.Recording(var path):
-                    SetStatus("● recording", Display.HistoryColor.Ok);
-                    display.History.AppendLine($"💾 Recording to {path}");
-                    break;
-
                 case TranscriptionEvent.Delta delta:
                     _currentDelta = (_currentDelta ?? "") + delta.Text;
                     UpdateTranscript();
@@ -300,16 +277,12 @@ public sealed class Orchestrator(
 
                 case TranscriptionEvent.Failed(var msg):
                     logger.LogError("Transcription failed: {Message}", msg);
-                    SetStatus(
-                        RecordingMode ? "recording: failed" : "transcription: failed",
-                        Display.HistoryColor.Error);
+                    SetStatus("transcription: failed", Display.HistoryColor.Error);
                     SetHint(null, Display.HistoryColor.Dim);
                     UpdateTranscript();
                     display.History.AppendLine($"🛑 {msg}", Display.HistoryColor.Error);
                     display.History.AppendLine(
-                        RecordingMode
-                            ? "   Recording stopped — restart Sancho to resume."
-                            : "   Transcription stopped — restart Sancho to resume.",
+                        "   Transcription stopped — restart Sancho to resume.",
                         Display.HistoryColor.Dim);
                     captureCts.Cancel();
                     break;

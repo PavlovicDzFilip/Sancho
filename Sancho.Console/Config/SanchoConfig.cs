@@ -4,12 +4,9 @@ namespace Sancho.Console.Config;
 
 /// <summary>
 /// User configuration persisted in <c>~/.sancho/config.json</c>.
-/// A <c>null</c> value means "not set"; resolution happens with
-/// precedence in Program.cs (defaults &lt; file &lt; env &lt; flags).
+/// Empty for now — reserved for future settings.
 /// </summary>
-public sealed record SanchoConfig(
-    string? ApiKey = null,
-    string? Transcription = null);
+public sealed record SanchoConfig();
 
 /// <summary>Source-generated JSON serializer for <see cref="SanchoConfig"/> (AOT-safe).</summary>
 [JsonSourceGenerationOptions(WriteIndented = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]

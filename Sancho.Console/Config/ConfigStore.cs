@@ -8,8 +8,11 @@ public sealed class ConfigException(string message) : Exception(message);
 /// <summary>Loads and saves Sancho's user config (<c>~/.sancho/config.json</c>).</summary>
 public static class ConfigStore
 {
-    /// <summary>Keys accepted by <c>sancho config get/set</c>.</summary>
-    public static readonly string[] KnownKeys = ["apiKey", "transcription"];
+    /// <summary>
+    /// Keys accepted by <c>sancho config get/set</c>. Empty for now — the
+    /// config file is reserved for future settings.
+    /// </summary>
+    public static readonly string[] KnownKeys = [];
 
     /// <summary>
     /// Loads the config file. A missing file yields defaults; malformed JSON
@@ -46,21 +49,14 @@ public static class ConfigStore
 
     /// <summary>Returns a copy of <paramref name="config"/> with one key set.</summary>
     /// <remarks>An empty value clears the key (stores <c>null</c>).</remarks>
-    public static SanchoConfig WithKey(SanchoConfig config, string key, string? value) => key switch
-    {
-        "apiKey" => config with { ApiKey = EmptyToNull(value) },
-        "transcription" => config with { Transcription = EmptyToNull(value) },
-        _ => throw new ConfigException($"Unknown config key '{key}'. Valid keys: {string.Join(", ", KnownKeys)}."),
-    };
+    public static SanchoConfig WithKey(SanchoConfig config, string key, string? value) =>
+        throw new ConfigException($"Unknown config key '{key}'. {ValidKeysHint}");
 
     /// <summary>Reads one key from <paramref name="config"/>.</summary>
-    public static string? GetValue(SanchoConfig config, string key) => key switch
-    {
-        "apiKey" => config.ApiKey,
-        "transcription" => config.Transcription,
-        _ => throw new ConfigException($"Unknown config key '{key}'. Valid keys: {string.Join(", ", KnownKeys)}."),
-    };
+    public static string? GetValue(SanchoConfig config, string key) =>
+        throw new ConfigException($"Unknown config key '{key}'. {ValidKeysHint}");
 
-    private static string? EmptyToNull(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value;
+    private static string ValidKeysHint => KnownKeys.Length > 0
+        ? $"Valid keys: {string.Join(", ", KnownKeys)}."
+        : "No config keys are defined yet.";
 }

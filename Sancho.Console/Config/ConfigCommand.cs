@@ -37,7 +37,7 @@ public static class ConfigCommand
         foreach (var key in ConfigStore.KnownKeys)
         {
             var value = ConfigStore.GetValue(config, key);
-            var display = value is null ? "[grey](not set)[/]" : Markup.Escape(MaskIfSensitive(key, value));
+            var display = value is null ? "[grey](not set)[/]" : Markup.Escape(value);
             AnsiConsole.MarkupLine($"  [bold]{key}[/]: {display}");
         }
         return 0;
@@ -54,8 +54,4 @@ public static class ConfigCommand
         AnsiConsole.MarkupLine($"[green]Saved[/] [bold]{Markup.Escape(key)}[/] to {SanchoPaths.ConfigFile}");
         return 0;
     }
-
-    /// <summary>Masks the API key down to its last four characters.</summary>
-    private static string MaskIfSensitive(string key, string value) =>
-        key == "apiKey" && value.Length > 4 ? $"••••{value[^4..]}" : value;
 }

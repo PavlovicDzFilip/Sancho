@@ -17,9 +17,6 @@ public static class SanchoPaths
     /// <summary>Path to <c>config.json</c>.</summary>
     public static string ConfigFile => Path.Combine(ConfigDir, "config.json");
 
-    /// <summary>Directory where voice recordings are written.</summary>
-    public static string RecordingsDir => Path.Combine(ConfigDir, "recordings");
-
     /// <summary>Run log written when <c>--log</c> is passed.</summary>
     public static string LogFile => Path.Combine(ConfigDir, "sancho.log");
 

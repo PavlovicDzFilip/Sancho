@@ -34,40 +34,26 @@ sancho --continue    # resume a previous session
 sancho --help
 ```
 
-## Local mode
+## Transcription
 
-`transcription: local` transcribes on-device with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (offline zipformer, English, int8, segmented by silero VAD) — no network, no API key, and the audio never leaves your machine:
-
-```bash
-sancho config set transcription local    # persist the local backend
-sancho --transcription local             # one run only
-```
-
-Utterances arrive when you stop speaking (~1 s after), not word-by-word. The first run downloads the speech model (~70 MB) into `~/.sancho/models/`. See `docs/feature/local-stt/` for how the engine was chosen.
-
-## Recording mode
-
-`transcription: record` saves your microphone to a WAV file in `~/.sancho/recordings/` instead of transcribing (`SANCHO_CONFIG_DIR` overrides the directory):
+Sancho transcribes on-device with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (offline whisper small.en int8, segmented by silero VAD) — no network, no API key, and the audio never leaves your machine:
 
 ```bash
-sancho config set transcription record   # persist the interim mode
-sancho --transcription record            # one run only
+sancho
 ```
 
-Stop with Ctrl+C to finalize the file. In record mode, Claude won't hear your voice.
+Utterances arrive when you stop speaking (~1 s after), not word-by-word. The first run downloads the speech model (~380 MB) into `~/.sancho/models/`. See `docs/feature/local-stt/` for how the engine was chosen.
 
 ## Configuration
 
 ```bash
-sancho config get [key]   # apiKey
-sancho config set apiKey sk-...
+sancho config get [key]
+sancho config set transcription local
 ```
 
 The system prompt is read from `.sancho.md` in the directory you run Sancho from. If the file is missing, Sancho creates it with a default prompt and tells you — edit it to customize.
 
-Keys: `apiKey` (prompted on first run in `openai` mode) and `transcription` (`openai` | `record` | `local`, default `openai`).
-
-Precedence: defaults < config file < `OPENAI_API_KEY` env var < flags (`--api-key`, `--transcription`).
+The config file currently holds no keys — it is reserved for future settings.
 
 ## Known issues
 

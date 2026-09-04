@@ -20,7 +20,6 @@ public sealed class ClaudeService
     private readonly string? _resumeSessionId;
     private readonly string _sessionId;
     private readonly ILogger<ClaudeService> _logger;
-    private readonly SessionTitleService _titleService;
     private readonly Channel<string> _input = Channel.CreateUnbounded<string>();
 
     private Process? _process;
@@ -28,14 +27,9 @@ public sealed class ClaudeService
     private TaskCompletionSource? _turnComplete;
     private volatile bool _ready;
 
-    // First user message, captured for session title generation.
-    private string? _firstUserText;
-    private int _titleRequested;
-
     public ClaudeService(
         string? resumeSessionId,
-        ILogger<ClaudeService> logger,
-        SessionTitleService titleService)
+        ILogger<ClaudeService> logger)
     {
         _targetDirectory = Directory.GetCurrentDirectory();
         _logger = logger;
@@ -43,7 +37,6 @@ public sealed class ClaudeService
         var promptPath = EnsureSystemPrompt(_targetDirectory).Path;
         _systemPrompt = File.ReadAllText(promptPath).Trim();
         _resumeSessionId = resumeSessionId;
-        _titleService = titleService;
         _sessionId = resumeSessionId ?? Guid.NewGuid().ToString("D");
     }
 
@@ -117,9 +110,6 @@ public sealed class ClaudeService
 
     private static string GetSessionsDirectory(string targetDirectory) =>
         Path.Combine(GetClaudeConfigDir(), "projects", EncodeProjectDirectory(targetDirectory));
-
-    private string GetTitlePath(string sessionId) =>
-        Path.Combine(GetSessionsDirectory(_targetDirectory), sessionId + ".title");
 
     /// <summary>Reads the saved display name for a session, if any.</summary>
     private static string? GetSessionTitle(string targetDirectory, string id)
@@ -409,12 +399,6 @@ public sealed class ClaudeService
             {
                 _ready = false;
 
-                if (_firstUserText is null)
-                {
-                    _firstUserText = sentence.Trim();
-                    RequestTitleGeneration();
-                }
-
                 var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 _turnComplete = tcs;
 
@@ -605,42 +589,6 @@ public sealed class ClaudeService
                 : "?";
             var isError = block.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
             writer.TryWrite(new ClaudeEvent.ToolResult(toolId!, isError));
-        }
-    }
-
-    // ── Session title generation ───────────────────────────────────
-
-    /// <summary>
-    /// Kicks off one-time background title generation as soon as the first
-    /// message is sent, unless the session already has a name.
-    /// </summary>
-    private void RequestTitleGeneration()
-    {
-        if (Interlocked.Exchange(ref _titleRequested, 1) != 0)
-            return;
-        if (File.Exists(GetTitlePath(_sessionId)))
-            return;
-
-        _ = Task.Run(GenerateAndSaveTitleAsync);
-    }
-
-    private async Task GenerateAndSaveTitleAsync()
-    {
-        try
-        {
-            if (File.Exists(GetTitlePath(_sessionId)))
-                return;
-
-            var title = await _titleService.GenerateTitleAsync(_firstUserText);
-            if (title is null)
-                return;
-
-            Directory.CreateDirectory(GetSessionsDirectory(_targetDirectory));
-            File.WriteAllText(GetTitlePath(_sessionId), title);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug("Session title generation failed: {Message}", ex.Message);
         }
     }
 

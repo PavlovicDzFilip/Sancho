@@ -103,6 +103,7 @@ static AgentService CreateAgent(string agentName, string? resumeSessionId, IServ
 {
     "claude" => CreateClaudeAgent(resumeSessionId, sp),
     "cursor" => CreateCursorAgent(resumeSessionId, sp),
+    "hermes" => CreateHermesAgent(resumeSessionId, sp),
     _ => throw new InvalidOperationException($"Agent '{agentName}' is not supported yet."),
 };
 
@@ -121,11 +122,20 @@ static AgentService CreateCursorAgent(string? resumeSessionId, IServiceProvider 
         resumeSessionId, sp.GetRequiredService<ILogger<CursorAgentService>>());
 }
 
+static AgentService CreateHermesAgent(string? resumeSessionId, IServiceProvider sp)
+{
+    HermesAgentService.VerifyAvailable();
+    return new HermesAgentService(
+        resumeSessionId, sp.GetRequiredService<ILogger<HermesAgentService>>());
+}
+
 /// <summary>Session list for the selected agent, for the --continue picker.</summary>
-static IReadOnlyList<AgentService.SessionSummary> ListAgentSessions(string agentName, string targetDirectory) =>
-    agentName == "cursor"
-        ? CursorAgentService.ListSessions(CursorAgentService.DefaultSessionRoot(), targetDirectory)
-        : ClaudeCodeAgentService.ListSessions(ClaudeCodeAgentService.DefaultSessionRoot(), targetDirectory);
+static IReadOnlyList<AgentService.SessionSummary> ListAgentSessions(string agentName, string targetDirectory) => agentName switch
+{
+    "cursor" => CursorAgentService.ListSessions(CursorAgentService.DefaultSessionRoot(), targetDirectory),
+    "hermes" => HermesAgentService.ListSessions(),
+    _ => ClaudeCodeAgentService.ListSessions(ClaudeCodeAgentService.DefaultSessionRoot(), targetDirectory),
+};
 
 // ── Run path ───────────────────────────────────────────────────────
 
@@ -143,9 +153,9 @@ async Task<int> Run(LogFileWriter? logFile)
     // The agent backend: config key or --agent flag; claude is the default.
     // More agents (cursor, codex, hermes) land behind the same seam later.
     var agentName = (cliArgs.Agent ?? stored.Agent ?? "claude").ToLowerInvariant();
-    if (agentName is not ("claude" or "cursor"))
+    if (agentName is not ("claude" or "cursor" or "hermes"))
     {
-        AnsiConsole.MarkupLine($"[red]Agent '{agentName}' is not supported yet. Use 'claude' or 'cursor'.[/]");
+        AnsiConsole.MarkupLine($"[red]Agent '{agentName}' is not supported yet. Use 'claude', 'cursor' or 'hermes'.[/]");
         return 2;
     }
 

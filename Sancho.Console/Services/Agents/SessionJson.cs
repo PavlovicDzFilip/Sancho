@@ -14,7 +14,8 @@ internal static class SessionJson
     public enum Format
     {
         ClaudeCode,
-        Cursor
+        Cursor,
+        Auto // try ClaudeCode first, then Cursor — for unknown export formats
     }
 
     /// <summary>Encodes a directory path the way agent session stores name project folders.</summary>
@@ -104,6 +105,11 @@ internal static class SessionJson
 
     private static (bool IsUser, string Text)? TryRead(JsonElement root, Format format)
     {
+        if (format == Format.Auto)
+        {
+            return TryRead(root, Format.ClaudeCode) ?? TryRead(root, Format.Cursor);
+        }
+
         if (!root.TryGetProperty("message", out var message))
             return null;
 

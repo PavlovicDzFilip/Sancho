@@ -102,14 +102,18 @@ static string? ChooseSession(string targetDirectory)
 async Task<int> Run(LogFileWriter? logFile)
 {
     // ── Verify prerequisites ──────────────────────────────────────────
-    try
+    // Notes mode never touches Claude, so the CLI isn't required there.
+    if (!cliArgs.Notes)
     {
-        ClaudeService.VerifyClaudeAvailable();
-    }
-    catch (InvalidOperationException ex)
-    {
-        AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
-        return 2;
+        try
+        {
+            ClaudeService.VerifyClaudeAvailable();
+        }
+        catch (InvalidOperationException ex)
+        {
+            AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
+            return 2;
+        }
     }
 
     // ffmpeg is the capture backend on Linux/macOS; Windows uses the bundled
@@ -129,17 +133,21 @@ async Task<int> Run(LogFileWriter? logFile)
 
     var targetDir = Directory.GetCurrentDirectory();
 
-    try
+    // Notes mode only transcribes — no system prompt file, no Claude session.
+    if (!cliArgs.Notes)
     {
-        var (promptPath, promptCreated) = ClaudeService.EnsureSystemPrompt(targetDir);
-        if (promptCreated)
-            AnsiConsole.MarkupLine(
-                $"[grey]Created {Path.GetFileName(promptPath)} with the default system prompt — edit it to customize.[/]");
-    }
-    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-    {
-        AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
-        return 2;
+        try
+        {
+            var (promptPath, promptCreated) = ClaudeService.EnsureSystemPrompt(targetDir);
+            if (promptCreated)
+                AnsiConsole.MarkupLine(
+                    $"[grey]Created {Path.GetFileName(promptPath)} with the default system prompt — edit it to customize.[/]");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
+            return 2;
+        }
     }
 
     // ── Resolve configuration (defaults < ~/.sancho/config.json < env < flags) ──
@@ -173,13 +181,28 @@ async Task<int> Run(LogFileWriter? logFile)
     services.AddSingleton<LocalSttModels>();
     services.AddSingleton<ITranscriptionService, LocalTranscriptionService>();
 
-    var resumeSessionId = cliArgs.Continue ? ChooseSession(targetDir) : null;
+    if (cliArgs.Notes)
+    {
+        // Notes mode never involves Claude — no CLI check, no session, no
+        // .sancho.md side effects. The orchestrator gets a null ClaudeService.
+        services.AddSingleton<Orchestrator>(sp => new Orchestrator(
+            sp.GetRequiredService<AudioSourceFactory>(),
+            sp.GetRequiredService<ITranscriptionService>(),
+            null,
+            sp.GetRequiredService<Display>(),
+            sp.GetRequiredService<MicLevelMonitor>(),
+            sp.GetRequiredService<ILogger<Orchestrator>>()));
+    }
+    else
+    {
+        var resumeSessionId = cliArgs.Continue ? ChooseSession(targetDir) : null;
 
-    services.AddSingleton<ClaudeService>(sp =>
-        new ClaudeService(
-            resumeSessionId,
-            sp.GetRequiredService<ILogger<ClaudeService>>()));
-    services.AddSingleton<Orchestrator>();
+        services.AddSingleton<ClaudeService>(sp =>
+            new ClaudeService(
+                resumeSessionId,
+                sp.GetRequiredService<ILogger<ClaudeService>>()));
+        services.AddSingleton<Orchestrator>();
+    }
 
     using var provider = services.BuildServiceProvider();
 

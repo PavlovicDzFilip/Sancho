@@ -1,3 +1,4 @@
+using System.Text;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Sancho.Console.Audio;
@@ -9,7 +10,7 @@ namespace Sancho.Console.Orchestration;
 public sealed class Orchestrator(
     AudioSourceFactory audioSourceFactory,
     ITranscriptionService transcriptionService,
-    ClaudeService claudeService,
+    ClaudeService? claudeService,
     Display display,
     MicLevelMonitor micMonitor,
     ILogger<Orchestrator> logger)
@@ -18,6 +19,15 @@ public sealed class Orchestrator(
     // buffers recent speech for replay without growing memory forever.
     private const int BufferedAudioSeconds = 30;
     private const int AudioChunkMilliseconds = 100; // matches the capture sources' chunk size
+
+    /// <summary>
+    /// True when <c>--notes</c> was passed: transcriptions append to a notes
+    /// file in the current directory and Claude (null in this mode) is never
+    /// involved.
+    /// </summary>
+    private bool NotesMode => claudeService is null;
+
+    private StreamWriter? _notes;
 
     private readonly object _bufferLock = new();
     private readonly List<string> _buffer = new();
@@ -54,13 +64,24 @@ public sealed class Orchestrator(
         // independently, but linked to it so shutdown cancels capture too.
         using var captureCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
         var captureTask = audioSource.CaptureAsync(channel.Writer, captureCts.Token);
-        var claudeEvents = claudeService.RunAsync(cts.Token);
 
-        display.History.AppendLine("🎤 Live transcription + Claude assistant started.");
-        display.History.AppendLine("   Flags: --continue / -c   pick a previous session to resume");
-        display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
+        if (NotesMode)
+        {
+            var notesPath = Path.Combine(Directory.GetCurrentDirectory(),
+                $"sancho-notes-{DateTime.Now:yyyy-MM-dd}.md");
+            _notes = new StreamWriter(notesPath, append: true, Encoding.UTF8) { AutoFlush = true };
+            display.History.AppendLine(
+                $"📝 Transcribing to {Path.GetFileName(notesPath)} — Claude is not involved.");
+            display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
+        }
+        else
+        {
+            display.History.AppendLine("🎤 Live transcription + Claude assistant started.");
+            display.History.AppendLine("   Flags: --continue / -c   pick a previous session to resume");
+            display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
+        }
 
-        if (claudeService.ContinueSession)
+        if (claudeService is { ContinueSession: true })
             PrintContinuedSession();
 
         // Render the transcript panel immediately so the task area is visible on startup.
@@ -82,7 +103,8 @@ public sealed class Orchestrator(
                 Display.HistoryColor.Warn);
         }
 
-        var claudeTask = ConsumeClaudeEventsAsync(claudeEvents, cts.Token);
+        var claudeEvents = claudeService?.RunAsync(cts.Token);
+        var claudeTask = claudeEvents is null ? null : ConsumeClaudeEventsAsync(claudeEvents, cts.Token);
         var transcribeTask = RunTranscriptionLoopAsync(
             channel.Reader.ReadAllAsync(cts.Token), captureCts, cts.Token);
         var micTask = MonitorMicAsync(cts.Token);
@@ -121,20 +143,23 @@ public sealed class Orchestrator(
             await Task.WhenAny(keyTask, cancelTask);
 
             await cts.CancelAsync();
-            await Task.WhenAll(captureTask, transcribeTask, claudeTask, micTask);
+            await Task.WhenAll(captureTask, transcribeTask, micTask);
+            if (claudeTask is not null)
+                await claudeTask;
         }
         finally
         {
             System.Console.CancelKeyPress -= OnCancelKeyPress;
         }
 
+        _notes?.Dispose();
         display.History.AppendLine("✅ Done.");
     }
 
     private void PrintContinuedSession()
     {
         // Show the full previous session, in order, untruncated.
-        var messages = claudeService.GetSessionMessages();
+        var messages = claudeService!.GetSessionMessages();
         if (messages.Count == 0)
         {
             display.History.AppendLine("   (no prior session found)", Display.HistoryColor.Dim);
@@ -238,9 +263,14 @@ public sealed class Orchestrator(
                     var sentence = completed.Transcript.Trim();
                     if (!string.IsNullOrWhiteSpace(sentence))
                     {
-                        lock (_bufferLock)
-                            _buffer.Add(sentence);
-                        TryFlushBuffer();
+                        if (NotesMode)
+                            AppendNote(sentence);
+                        else
+                        {
+                            lock (_bufferLock)
+                                _buffer.Add(sentence);
+                            TryFlushBuffer();
+                        }
                     }
 
                     UpdateTranscript();
@@ -287,6 +317,23 @@ public sealed class Orchestrator(
                     captureCts.Cancel();
                     break;
             }
+        }
+    }
+
+    /// <summary>
+    /// Appends one transcribed utterance to the notes file (<c>--notes</c>
+    /// mode). One line per utterance; failures warn but never kill the run.
+    /// </summary>
+    private void AppendNote(string text)
+    {
+        try
+        {
+            _notes!.WriteLine(text);
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        {
+            logger.LogError("Could not write notes: {Message}", ex.Message);
+            display.History.AppendLine($"⚠ Could not write notes: {ex.Message}", Display.HistoryColor.Error);
         }
     }
 
@@ -401,7 +448,7 @@ public sealed class Orchestrator(
                     display.History.AppendLine($"💬 {line}");
 
                 UpdateTranscript(); // clears the queued lines and restores the idle hint
-                claudeService.Send(combined);
+                claudeService!.Send(combined);
                 _claudeIsReady = false;
             }
         }

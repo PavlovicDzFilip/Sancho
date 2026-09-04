@@ -32,6 +32,7 @@
 
 ## CLI Surface
 - `sancho` — start listening in the current directory
+- `sancho --notes` — dictation mode: transcriptions append to `sancho-notes-YYYY-MM-DD.md` in the current directory; Claude is never involved (no CLI check, no session, no `.sancho.md`)
 - `sancho --continue` / `-c` — session picker, resumes a prior Claude session
 - `sancho config get [key]` / `sancho config set <key> <value>` — view/persist config
 - `sancho --help`, `sancho --version`

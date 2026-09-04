@@ -20,6 +20,8 @@ public static class HelpText
           sancho config set <key> <value> Persist one config key
 
         Options:
+          --notes                          Transcribe to sancho-notes-YYYY-MM-DD.md in the current
+                                           directory — Claude is not involved
           --log                            Write a run log (console mirror + debug diagnostics + claude I/O)
                                            to ~/.sancho/sancho.log — this run only, not persisted
           -h, --help                      Show this help

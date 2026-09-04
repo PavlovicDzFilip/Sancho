@@ -18,15 +18,21 @@ public class DecodeTests
     /// <summary>The sentence the fixture must contain — record it with a little silence around it.</summary>
     private const string ExpectedPhrase = "the quick brown fox jumps over the lazy dog";
 
+    private static readonly string[] AudioExtensions = [".wav", ".m4a", ".mp3", ".aac", ".flac"];
+
     [Fact]
     public async Task FixtureSentence_TranscribesKnownPhrase()
     {
         if (!OperatingSystem.IsWindows())
-            Assert.Skip("Fixture conversion uses NAudio's Windows readers.");
+            Assert.Skip("Fixture conversion uses NAudio's Media Foundation reader (Windows).");
 
-        var fixture = Path.Combine(AppContext.BaseDirectory, "fixtures", "decode-sentence.wav");
-        if (!File.Exists(fixture))
-            Assert.Skip("fixtures/decode-sentence.wav not present — record the expected phrase and drop it in.");
+        var fixturesDir = Path.Combine(AppContext.BaseDirectory, "fixtures");
+        var fixture = Directory.Exists(fixturesDir)
+            ? Directory.GetFiles(fixturesDir)
+                .FirstOrDefault(f => AudioExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+            : null;
+        if (fixture is null)
+            Assert.Skip("No audio fixture present — record the expected phrase into Sancho.Tests/fixtures/.");
 
         var modelDir = Path.Combine(SanchoPaths.ModelsDir, LocalSttModels.ModelDirName);
         if (!Directory.Exists(modelDir))
@@ -38,7 +44,8 @@ public class DecodeTests
             new LocalSttModels(NullLogger<LocalSttModels>.Instance));
 
         var completed = new List<string>();
-        await foreach (var evt in service.TranscribeAsync(Chunked(pcm, ChunkSamples: 2400)))
+        await foreach (var evt in service.TranscribeAsync(
+            Chunked(pcm, ChunkSamples: 2400), TestContext.Current.CancellationToken))
         {
             if (evt is TranscriptionEvent.Completed c)
                 completed.Add(c.Transcript);
@@ -61,12 +68,12 @@ public class DecodeTests
         await Task.CompletedTask;
     }
 
-    /// <summary>Converts any NAudio-readable audio file to 24 kHz mono PCM16.</summary>
+    /// <summary>Converts any Media Foundation-readable audio file (wav, m4a, mp3, ...) to 24 kHz mono PCM16.</summary>
     private static byte[] LoadAs24kMonoPcm16(string path)
     {
-        using var audio = new AudioFileReader(path);
+        using var audio = new MediaFoundationReader(path);
         var channels = audio.WaveFormat.Channels;
-        var resampler = new WdlResamplingSampleProvider(audio, 24000);
+        var resampler = new WdlResamplingSampleProvider(audio.ToSampleProvider(), 24000);
 
         var floats = new List<float>();
         var buffer = new float[4096];

@@ -104,6 +104,7 @@ static AgentService CreateAgent(string agentName, string? resumeSessionId, IServ
     "claude" => CreateClaudeAgent(resumeSessionId, sp),
     "cursor" => CreateCursorAgent(resumeSessionId, sp),
     "hermes" => CreateHermesAgent(resumeSessionId, sp),
+    "codex" => CreateCodexAgent(resumeSessionId, sp),
     _ => throw new InvalidOperationException($"Agent '{agentName}' is not supported yet."),
 };
 
@@ -129,11 +130,19 @@ static AgentService CreateHermesAgent(string? resumeSessionId, IServiceProvider 
         resumeSessionId, sp.GetRequiredService<ILogger<HermesAgentService>>());
 }
 
+static AgentService CreateCodexAgent(string? resumeSessionId, IServiceProvider sp)
+{
+    CodexAgentService.VerifyAvailable();
+    return new CodexAgentService(
+        resumeSessionId, sp.GetRequiredService<ILogger<CodexAgentService>>());
+}
+
 /// <summary>Session list for the selected agent, for the --continue picker.</summary>
 static IReadOnlyList<AgentService.SessionSummary> ListAgentSessions(string agentName, string targetDirectory) => agentName switch
 {
     "cursor" => CursorAgentService.ListSessions(CursorAgentService.DefaultSessionRoot(), targetDirectory),
     "hermes" => HermesAgentService.ListSessions(),
+    "codex" => CodexAgentService.ListAllSessions(CodexAgentService.DefaultSessionRoot()),
     _ => ClaudeCodeAgentService.ListSessions(ClaudeCodeAgentService.DefaultSessionRoot(), targetDirectory),
 };
 
@@ -153,9 +162,9 @@ async Task<int> Run(LogFileWriter? logFile)
     // The agent backend: config key or --agent flag; claude is the default.
     // More agents (cursor, codex, hermes) land behind the same seam later.
     var agentName = (cliArgs.Agent ?? stored.Agent ?? "claude").ToLowerInvariant();
-    if (agentName is not ("claude" or "cursor" or "hermes"))
+    if (agentName is not ("claude" or "cursor" or "hermes" or "codex"))
     {
-        AnsiConsole.MarkupLine($"[red]Agent '{agentName}' is not supported yet. Use 'claude', 'cursor' or 'hermes'.[/]");
+        AnsiConsole.MarkupLine($"[red]Agent '{agentName}' is not supported yet. Use 'claude', 'cursor', 'hermes' or 'codex'.[/]");
         return 2;
     }
 

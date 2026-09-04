@@ -15,7 +15,8 @@ internal static class SessionJson
     {
         ClaudeCode,
         Cursor,
-        Auto // try ClaudeCode first, then Cursor — for unknown export formats
+        Codex,
+        Auto // try ClaudeCode first, then Cursor, then Codex — for unknown export formats
     }
 
     /// <summary>Encodes a directory path the way agent session stores name project folders.</summary>
@@ -42,7 +43,10 @@ internal static class SessionJson
         var sb = new StringBuilder();
         foreach (var block in content.EnumerateArray())
         {
-            if (block.TryGetProperty("type", out var bt) && bt.GetString() == "text"
+            // claude/cursor blocks are {"type":"text","text":...}; codex uses
+            // {"type":"input_text"/"output_text","text":...}.
+            if (block.TryGetProperty("type", out var bt)
+                && bt.GetString() is "text" or "input_text" or "output_text"
                 && block.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String)
             {
                 if (sb.Length > 0)
@@ -107,28 +111,49 @@ internal static class SessionJson
     {
         if (format == Format.Auto)
         {
-            return TryRead(root, Format.ClaudeCode) ?? TryRead(root, Format.Cursor);
+            return TryRead(root, Format.ClaudeCode)
+                ?? TryRead(root, Format.Cursor)
+                ?? TryRead(root, Format.Codex);
+        }
+
+        if (format == Format.Codex)
+        {
+            // codex wraps everything in a payload envelope; messages live in
+            // response_item events.
+            if (!root.TryGetProperty("payload", out var payload)
+                || !payload.TryGetProperty("type", out var itemType)
+                || itemType.GetString() != "message")
+            {
+                return null;
+            }
+
+            var role = payload.TryGetProperty("role", out var r) ? r.GetString() ?? "" : "";
+            if (role is not ("user" or "assistant"))
+                return null;
+
+            var codexText = ExtractText(payload);
+            return string.IsNullOrWhiteSpace(codexText) ? null : (role == "user", codexText);
         }
 
         if (!root.TryGetProperty("message", out var message))
             return null;
 
-        var role = "";
+        var messageRole = "";
         if (format == Format.ClaudeCode)
         {
             if (!root.TryGetProperty("type", out var typeEl) || typeEl.GetString() is not ("user" or "assistant"))
                 return null;
-            role = message.TryGetProperty("role", out var r) ? r.GetString() ?? "" : "";
+            messageRole = message.TryGetProperty("role", out var r) ? r.GetString() ?? "" : "";
         }
         else
         {
-            role = root.TryGetProperty("role", out var r) ? r.GetString() ?? "" : "";
+            messageRole = root.TryGetProperty("role", out var r) ? r.GetString() ?? "" : "";
         }
 
-        if (role is not ("user" or "assistant"))
+        if (messageRole is not ("user" or "assistant"))
             return null;
 
         var text = ExtractText(message);
-        return string.IsNullOrWhiteSpace(text) ? null : (role == "user", text);
+        return string.IsNullOrWhiteSpace(text) ? null : (messageRole == "user", text);
     }
 }

@@ -29,11 +29,18 @@ public sealed class MicLevelMonitor
     /// <summary>Exponential decay per update (~0.65 s half-life at 10 chunks/s).</summary>
     private const double DecayPerUpdate = 0.85;
 
+    private readonly Func<long> _clock;
     private long _levelBits;
     private long _meanLevelBits;
     private long _silentSince = -1;
     private long _clippedSince = -1;
     private int _seenSignal;
+
+    /// <summary>Allows tests to inject a fake clock; defaults to the system tick counter.</summary>
+    public MicLevelMonitor(Func<long>? clock = null)
+    {
+        _clock = clock ?? (() => Environment.TickCount64);
+    }
 
     /// <summary>Recent signal level, 0..1 (peak, exponentially smoothed).</summary>
     public double Level =>
@@ -56,7 +63,7 @@ public sealed class MicLevelMonitor
         get
         {
             var since = Interlocked.Read(ref _silentSince);
-            return since >= 0 && Environment.TickCount64 - since > SilenceWarnDelay.TotalMilliseconds;
+            return since >= 0 && _clock() - since > SilenceWarnDelay.TotalMilliseconds;
         }
     }
 
@@ -70,7 +77,7 @@ public sealed class MicLevelMonitor
         get
         {
             var since = Interlocked.Read(ref _clippedSince);
-            return since >= 0 && Environment.TickCount64 - since > ClippedWarnDelay.TotalMilliseconds;
+            return since >= 0 && _clock() - since > ClippedWarnDelay.TotalMilliseconds;
         }
     }
 
@@ -103,7 +110,7 @@ public sealed class MicLevelMonitor
         if (level < SilenceThreshold)
         {
             if (Interlocked.Read(ref _silentSince) < 0)
-                Interlocked.Exchange(ref _silentSince, Environment.TickCount64);
+                Interlocked.Exchange(ref _silentSince, _clock());
         }
         else
         {
@@ -114,7 +121,7 @@ public sealed class MicLevelMonitor
         if (MeanLevel >= ClippedMeanThreshold)
         {
             if (Interlocked.Read(ref _clippedSince) < 0)
-                Interlocked.Exchange(ref _clippedSince, Environment.TickCount64);
+                Interlocked.Exchange(ref _clippedSince, _clock());
         }
         else
         {

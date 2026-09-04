@@ -456,7 +456,7 @@ public sealed class Orchestrator(
     /// unfilled shell render in the default (white) foreground, the filled
     /// portion in green. Empty = all white; full = all green.
     /// </summary>
-    private static string LevelMeter(double level)
+    internal static string LevelMeter(double level)
     {
         const string ramp = "▁▂▃▄▅▆▇█";
         var db = 20 * Math.Log10(Math.Max(level, 1e-6));

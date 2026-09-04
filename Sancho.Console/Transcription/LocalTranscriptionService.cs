@@ -322,7 +322,7 @@ public sealed class LocalTranscriptionService(
     /// is transcribed by both windows, so each part after the first starts
     /// with words the previous part already ended with — strip those.
     /// </summary>
-    private static string JoinOverlappingParts(List<string> parts)
+    internal static string JoinOverlappingParts(List<string> parts)
     {
         var result = new StringBuilder(parts[0]);
         for (var i = 1; i < parts.Count; i++)
@@ -365,7 +365,7 @@ public sealed class LocalTranscriptionService(
     }
 
     /// <summary>Decodes one whisper-sized window of 16 kHz samples.</summary>
-    private static string DecodeWindow(OfflineRecognizer recognizer, float[] window)
+    internal static string DecodeWindow(OfflineRecognizer recognizer, float[] window)
     {
         using var stream = recognizer.CreateStream();
         stream.AcceptWaveform(VadSampleRate, window);
@@ -416,7 +416,7 @@ public sealed class LocalTranscriptionService(
     }
 
     /// <summary>Converts one PCM16 mono chunk into normalized float samples.</summary>
-    private static float[] ToSamples(byte[] chunk)
+    internal static float[] ToSamples(byte[] chunk)
     {
         var samples = new float[chunk.Length / 2];
         for (var i = 0; i < samples.Length; i++)
@@ -431,7 +431,7 @@ public sealed class LocalTranscriptionService(
     /// 0-8 kHz, so the aliasing from the cheap resampler (above 8 kHz) never
     /// reaches either model.
     /// </summary>
-    private static float[] ResampleTo16k(float[] samples)
+    internal static float[] ResampleTo16k(float[] samples)
     {
         var count = samples.Length * 2 / 3;
         var resampled = new float[count];

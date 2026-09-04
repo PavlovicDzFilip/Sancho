@@ -87,7 +87,7 @@ public sealed class LoopbackAudioSource : IAudioSource, IDisposable
     }
 
     /// <summary>Converts one interleaved float capture buffer into mono samples.</summary>
-    private static float[] ToMono(byte[] buffer, int bytesRecorded, int bytesPerSample, int channels)
+    internal static float[] ToMono(byte[] buffer, int bytesRecorded, int bytesPerSample, int channels)
     {
         var frameCount = bytesRecorded / (bytesPerSample * channels);
         var mono = new float[frameCount];

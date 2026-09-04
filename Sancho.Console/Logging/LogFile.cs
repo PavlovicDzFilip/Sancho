@@ -18,7 +18,9 @@ public sealed class LogFileWriter : IDisposable
     public LogFileWriter(string path)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        _writer = new StreamWriter(path, append: false, Encoding.UTF8) { AutoFlush = true };
+        // UTF8Encoding(false): no BOM — a BOM would precede the first line
+        // (and StreamWriter flushes its preamble the moment AutoFlush is set).
+        _writer = new StreamWriter(path, append: false, new UTF8Encoding(false)) { AutoFlush = true };
     }
 
     /// <summary>Appends text; complete lines are flushed with a timestamp prefix.</summary>
@@ -99,7 +101,9 @@ public sealed class LogFileWriter : IDisposable
         var stripped = Ansi.Replace(text, "");
         stripped = SpaceRun.Replace(stripped, " ");
         stripped = DashRun.Replace(stripped, "──");
-        return stripped.TrimEnd('\r');
+        // Trim both line endings: a flushed line may still carry the '\n'
+        // that closed it, and WriteLine appends its own newline below.
+        return stripped.TrimEnd('\r', '\n');
     }
 }
 

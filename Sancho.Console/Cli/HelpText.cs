@@ -20,6 +20,8 @@ public static class HelpText
           sancho config set <key> <value> Persist one config key
 
         Options:
+          --meeting                        Transcribe your mic + the system output (other meeting
+                                           participants) — lines labeled Me/Others; Windows only
           --notes                          Transcribe to sancho-notes-YYYY-MM-DD.md in the current
                                            directory — Claude is not involved
           --log                            Write a run log (console mirror + debug diagnostics + claude I/O)

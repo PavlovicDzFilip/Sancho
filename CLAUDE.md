@@ -20,7 +20,7 @@
 - .NET 10 console app (`Sancho.Console.csproj`, exe name `sancho`)
 - Entry point: `Program.cs` — CLI parsing (`Cli\CliArgs.cs`) and the early-exit commands (`--help`, `--version`, `config`) run before any services are built; the run path resolves config, then builds a plain `ServiceCollection` (no Generic Host, no ConfigurationBinder).
 - Config: `Config\SanchoPaths.cs` + `Config\ConfigStore.cs` — user config in `~/.sancho/config.json`, read via source-generated System.Text.Json (`SanchoConfigJsonContext`).
-- Audio capture: `IAudioSource` → `MicrophoneAudioSource` (NAudio, Windows) / `FfmpegAudioSource` (ffmpeg subprocess: avfoundation on macOS, pulse with ALSA fallback on Linux)
+- Audio capture: `IAudioSource` → `MicrophoneAudioSource` (NAudio, Windows) / `FfmpegAudioSource` (ffmpeg subprocess: avfoundation on macOS, pulse with ALSA fallback on Linux) / `LoopbackAudioSource` (WASAPI loopback, Windows — `--meeting` mode)
 - Transcription: `LocalTranscriptionService` (the only backend — on-device sherpa-onnx offline whisper small.en int8 + silero VAD; utterances arrive as `Completed` events at utterance end, no live deltas; model files downloaded to `~/.sancho/models/` on first use; `LocalSttModels` handles provisioning). The OpenAI and record backends were removed — sancho is fully offline (ADR-0004). Engine choice: `docs/feature/local-stt/ADR-0003-offline-whisper-vad.md` (supersedes ADR-0002; model size may be revisited).
 - Claude integration: `ClaudeService` (subprocess via `claude --print --input-format stream-json --output-format stream-json`)
 - Pipeline: mic → Channel<byte[]> → `LocalTranscriptionService` → Channel<string> → Claude CLI
@@ -33,6 +33,7 @@
 ## CLI Surface
 - `sancho` — start listening in the current directory
 - `sancho --notes` — dictation mode: transcriptions append to `sancho-notes-YYYY-MM-DD.md` in the current directory; Claude is never involved (no CLI check, no session, no `.sancho.md`)
+- `sancho --meeting` — meeting mode: transcribes the mic and the system output (other participants) as two whisper streams sharing one recognizer; output lines are labeled `Me:`/`Others:`; Windows-only for now (WASAPI loopback), Linux/macOS later
 - `sancho --continue` / `-c` — session picker, resumes a prior Claude session
 - `sancho config get [key]` / `sancho config set <key> <value>` — view/persist config
 - `sancho --help`, `sancho --version`

@@ -27,6 +27,20 @@ public sealed class AudioSourceFactory(
         throw new PlatformNotSupportedException("Audio capture is not supported on this platform.");
     }
 
+    /// <summary>
+    /// Creates the loopback source capturing the system audio output (other
+    /// meeting participants). Windows-only for now — Linux pulse monitors and
+    /// macOS virtual devices are future work.
+    /// </summary>
+    public IAudioSource CreateLoopback()
+    {
+        if (OperatingSystem.IsWindows())
+            return new LoopbackAudioSource(loggerFactory.CreateLogger<LoopbackAudioSource>(), display);
+
+        throw new PlatformNotSupportedException(
+            "Loopback capture is Windows-only for now — Linux/macOS coming later.");
+    }
+
     private IAudioSource CreateWindowsSource()
     {
         var count = WaveInEvent.DeviceCount;

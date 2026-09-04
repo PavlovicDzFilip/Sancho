@@ -26,10 +26,14 @@ namespace Sancho.Console.Transcription;
 /// </remarks>
 public sealed class LocalTranscriptionService(
     ILogger<LocalTranscriptionService> logger,
-    LocalSttModels models) : ITranscriptionService
+    LocalSttModels models)
 {
     private const int CaptureSampleRate = 24000;
     private const int VadSampleRate = 16000;
+
+    // The recognizer is not thread-safe and decode is CPU-bound, so meeting
+    // mode's two streams serialize their decodes on this lock.
+    private readonly object _decodeLock = new();
 
     /// <summary>How much pre-speech audio the pending buffer keeps while nothing has been said.</summary>
     private const int SilencePreRollSamples = CaptureSampleRate * 2;
@@ -48,7 +52,6 @@ public sealed class LocalTranscriptionService(
     /// </summary>
     private const int WhisperOverlapSamples = VadSampleRate; // 1 s — longer than almost any word
 
-    /// <inheritdoc />
     public async IAsyncEnumerable<TranscriptionEvent> TranscribeAsync(
         IAsyncEnumerable<byte[]> audioInput,
         [EnumeratorCancellation] CancellationToken ct = default)
@@ -75,7 +78,34 @@ public sealed class LocalTranscriptionService(
         }
     }
 
-    /// <summary>Runs the recognizer and writes its events into the channel.</summary>
+    /// <summary>
+    /// Meeting mode: two independent whisper streams — the microphone and the
+    /// system output (other participants) — sharing one recognizer.
+    /// <see cref="TranscriptionEvent.Completed"/> events are tagged with
+    /// <c>FromMic</c> so the caller can label the lines.
+    /// </summary>
+    public async IAsyncEnumerable<TranscriptionEvent> TranscribeMeetingAsync(
+        IAsyncEnumerable<byte[]> micInput,
+        IAsyncEnumerable<byte[]> loopbackInput,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var events = Channel.CreateUnbounded<TranscriptionEvent>(
+            new UnboundedChannelOptions { SingleWriter = false, SingleReader = true });
+
+        var producer = ProduceMeetingAsync(micInput, loopbackInput, events.Writer, ct);
+
+        try
+        {
+            await foreach (var evt in events.Reader.ReadAllAsync())
+                yield return evt;
+        }
+        finally
+        {
+            await producer;
+        }
+    }
+
+    /// <summary>Runs the single-stream recognizer and writes its events into the channel.</summary>
     private async Task ProduceAsync(
         IAsyncEnumerable<byte[]> audioInput,
         ChannelWriter<TranscriptionEvent> events,
@@ -93,10 +123,84 @@ public sealed class LocalTranscriptionService(
                 return;
             }
 
-            using var vad = CreateVad(modelDir);
             using var recognizer = CreateRecognizer(modelDir);
-
             events.TryWrite(new TranscriptionEvent.Connected());
+            await RunStreamAsync(audioInput, modelDir, recognizer, events, ct, isMic: true);
+        }
+        catch (OperationCanceledException)
+        {
+            // Ctrl+C — stop without waiting for the engine to settle.
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException
+                                       or DllNotFoundException or BadImageFormatException)
+        {
+            logger.LogError("Local transcription stopped: {Message}", ex.Message);
+            events.TryWrite(new TranscriptionEvent.Failed(
+                $"Local transcription stopped: {ex.Message}"));
+        }
+        finally
+        {
+            events.TryComplete();
+        }
+    }
+
+    /// <summary>Runs the two meeting streams and writes their events into the channel.</summary>
+    private async Task ProduceMeetingAsync(
+        IAsyncEnumerable<byte[]> micInput,
+        IAsyncEnumerable<byte[]> loopbackInput,
+        ChannelWriter<TranscriptionEvent> events,
+        CancellationToken ct)
+    {
+        try
+        {
+            var modelDir = await models.EnsureDownloadedAsync(ct);
+            if (modelDir is null)
+            {
+                events.TryWrite(new TranscriptionEvent.Failed(
+                    "Could not download the speech model — check your connection and restart Sancho."));
+                return;
+            }
+
+            using var recognizer = CreateRecognizer(modelDir);
+            events.TryWrite(new TranscriptionEvent.Connected());
+
+            // Two streams, one recognizer: decodes serialize on _decodeLock.
+            await Task.WhenAll(
+                RunStreamAsync(micInput, modelDir, recognizer, events, ct, isMic: true),
+                RunStreamAsync(loopbackInput, modelDir, recognizer, events, ct, isMic: false));
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException
+                                       or DllNotFoundException or BadImageFormatException)
+        {
+            logger.LogError("Local transcription stopped: {Message}", ex.Message);
+            events.TryWrite(new TranscriptionEvent.Failed(
+                $"Local transcription stopped: {ex.Message}"));
+        }
+        finally
+        {
+            events.TryComplete();
+        }
+    }
+
+    /// <summary>
+    /// Runs one transcription stream: its own silero VAD and pending buffer,
+    /// sharing <paramref name="recognizer"/> with any sibling stream. Swallows
+    /// cancellation so the producer task completes normally.
+    /// </summary>
+    private async Task RunStreamAsync(
+        IAsyncEnumerable<byte[]> audioInput,
+        string modelDir,
+        OfflineRecognizer recognizer,
+        ChannelWriter<TranscriptionEvent> events,
+        CancellationToken ct,
+        bool isMic)
+    {
+        try
+        {
+            using var vad = CreateVad(modelDir);
 
             // Pending accumulates the 24 kHz audio since the last utterance, so
             // every decode gets its full pre-roll for free (silero's onset
@@ -129,29 +233,18 @@ public sealed class LocalTranscriptionService(
                         events.TryWrite(new TranscriptionEvent.SpeechDetected());
                     }
 
-                    DecodeReadySegments(vad, recognizer, pending, events, ref hadSpeech);
+                    DecodeReadySegments(vad, recognizer, pending, events, ref hadSpeech, isMic);
                 }
             }
 
             // The channel completed without cancellation — force out the final
             // utterance so its text still reaches Claude on graceful shutdown.
             vad.Flush();
-            DecodeReadySegments(vad, recognizer, pending, events, ref hadSpeech);
+            DecodeReadySegments(vad, recognizer, pending, events, ref hadSpeech, isMic);
         }
         catch (OperationCanceledException)
         {
             // Ctrl+C — stop without waiting for the engine to settle.
-        }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException
-                                       or DllNotFoundException or BadImageFormatException)
-        {
-            logger.LogError("Local transcription stopped: {Message}", ex.Message);
-            events.TryWrite(new TranscriptionEvent.Failed(
-                $"Local transcription stopped: {ex.Message}"));
-        }
-        finally
-        {
-            events.TryComplete();
         }
     }
 
@@ -161,12 +254,13 @@ public sealed class LocalTranscriptionService(
     /// buffer, which starts before the segment's speech and ends on the
     /// trailing silence that closed it.
     /// </summary>
-    private static void DecodeReadySegments(
+    private void DecodeReadySegments(
         VoiceActivityDetector vad,
         OfflineRecognizer recognizer,
         List<float> pending,
         ChannelWriter<TranscriptionEvent> events,
-        ref bool hadSpeech)
+        ref bool hadSpeech,
+        bool isMic)
     {
         while (!vad.IsEmpty())
         {
@@ -176,13 +270,19 @@ public sealed class LocalTranscriptionService(
                 continue; // shorter than 500 ms of speech: noise, not an utterance
 
             events.TryWrite(new TranscriptionEvent.Decoding());
-            var transcript = Decode(recognizer, pending);
+
+            string transcript;
+            lock (_decodeLock)
+            {
+                transcript = Decode(recognizer, pending);
+            }
+
             pending.Clear();
             hadSpeech = false;
 
             var text = transcript.Trim();
             if (!string.IsNullOrWhiteSpace(text))
-                events.TryWrite(new TranscriptionEvent.Completed(text));
+                events.TryWrite(new TranscriptionEvent.Completed(text, isMic));
         }
     }
 

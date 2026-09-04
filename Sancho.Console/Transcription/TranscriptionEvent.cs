@@ -9,8 +9,11 @@ public abstract record TranscriptionEvent
     /// <summary>A partial transcription delta — display inline as the user speaks.</summary>
     public sealed record Delta(string Text) : TranscriptionEvent;
 
-    /// <summary>A finalized utterance — the sentence to forward to Claude.</summary>
-    public sealed record Completed(string Transcript) : TranscriptionEvent;
+    /// <summary>
+    /// A finalized utterance — the sentence to forward to Claude. In meeting
+    /// mode, <see cref="FromMic"/> tags which stream it came from.
+    /// </summary>
+    public sealed record Completed(string Transcript, bool FromMic = false) : TranscriptionEvent;
 
     /// <summary>
     /// Speech detected in the microphone via silero VAD — drives the

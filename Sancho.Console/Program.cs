@@ -101,6 +101,12 @@ static string? ChooseSession(string targetDirectory)
 
 async Task<int> Run(LogFileWriter? logFile)
 {
+    if (cliArgs.Meeting && !OperatingSystem.IsWindows())
+    {
+        AnsiConsole.MarkupLine("[red]--meeting is Windows-only for now (loopback capture); Linux/macOS coming later.[/]");
+        return 2;
+    }
+
     // ── Verify prerequisites ──────────────────────────────────────────
     // Notes mode never touches Claude, so the CLI isn't required there.
     if (!cliArgs.Notes)
@@ -179,7 +185,9 @@ async Task<int> Run(LogFileWriter? logFile)
     services.AddSingleton<MicLevelMonitor>();
     services.AddSingleton<AudioSourceFactory>();
     services.AddSingleton<LocalSttModels>();
-    services.AddSingleton<ITranscriptionService, LocalTranscriptionService>();
+    services.AddSingleton<LocalTranscriptionService>();
+
+    services.AddSingleton(cliArgs);
 
     if (cliArgs.Notes)
     {
@@ -187,7 +195,8 @@ async Task<int> Run(LogFileWriter? logFile)
         // .sancho.md side effects. The orchestrator gets a null ClaudeService.
         services.AddSingleton<Orchestrator>(sp => new Orchestrator(
             sp.GetRequiredService<AudioSourceFactory>(),
-            sp.GetRequiredService<ITranscriptionService>(),
+            sp.GetRequiredService<LocalTranscriptionService>(),
+            sp.GetRequiredService<CliArgs>(),
             null,
             sp.GetRequiredService<Display>(),
             sp.GetRequiredService<MicLevelMonitor>(),

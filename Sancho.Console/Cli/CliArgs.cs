@@ -11,18 +11,20 @@ public sealed record CliArgs(
     bool ShowHelp,
     bool ShowVersion,
     bool Log,
-    bool Notes)
+    bool Notes,
+    bool Meeting)
 {
     /// <summary>
-    /// Parses the command line: <c>-c</c>, <c>--log</c>, <c>--notes</c>, and
-    /// the <c>config</c> subcommand. Unknown flags/commands throw
-    /// <see cref="UsageError"/>.
+    /// Parses the command line: <c>-c</c>, <c>--log</c>, <c>--notes</c>,
+    /// <c>--meeting</c>, and the <c>config</c> subcommand. Unknown
+    /// flags/commands throw <see cref="UsageError"/>.
     /// </summary>
     public static CliArgs Parse(string[] args)
     {
         var continueSession = false;
         var log = false;
         var notes = false;
+        var meeting = false;
         var positional = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
@@ -31,9 +33,9 @@ public sealed record CliArgs(
             switch (arg)
             {
                 case "-h" or "--help":
-                    return new CliArgs(false, null, [], true, false, false, false);
+                    return new CliArgs(false, null, [], true, false, false, false, false);
                 case "-v" or "--version":
-                    return new CliArgs(false, null, [], false, true, false, false);
+                    return new CliArgs(false, null, [], false, true, false, false, false);
                 case "-c" or "--continue":
                     continueSession = true;
                     break;
@@ -42,6 +44,9 @@ public sealed record CliArgs(
                     break;
                 case "--notes":
                     notes = true;
+                    break;
+                case "--meeting":
+                    meeting = true;
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -59,10 +64,10 @@ public sealed record CliArgs(
         {
             if (positional[0] is not "config")
                 throw new UsageError($"Unknown command '{positional[0]}'.");
-            return new CliArgs(continueSession, "config", positional.Skip(1).ToArray(), false, false, log, notes);
+            return new CliArgs(continueSession, "config", positional.Skip(1).ToArray(), false, false, log, notes, meeting);
         }
 
-        return new CliArgs(continueSession, null, [], false, false, log, notes);
+        return new CliArgs(continueSession, null, [], false, false, log, notes, meeting);
     }
 
     private static (string Name, string? Value) SplitFlag(string arg)

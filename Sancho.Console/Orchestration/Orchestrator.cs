@@ -2,6 +2,7 @@ using System.Text;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Sancho.Console.Audio;
+using Sancho.Console.Cli;
 using Sancho.Console.Services;
 using Sancho.Console.Transcription;
 
@@ -9,7 +10,8 @@ namespace Sancho.Console.Orchestration;
 
 public sealed class Orchestrator(
     AudioSourceFactory audioSourceFactory,
-    ITranscriptionService transcriptionService,
+    LocalTranscriptionService transcriptionService,
+    CliArgs cliArgs,
     ClaudeService? claudeService,
     Display display,
     MicLevelMonitor micMonitor,
@@ -26,6 +28,9 @@ public sealed class Orchestrator(
     /// involved.
     /// </summary>
     private bool NotesMode => claudeService is null;
+
+    /// <summary>True when <c>--meeting</c> was passed: mic + system output.</summary>
+    private bool MeetingMode => cliArgs.Meeting;
 
     private StreamWriter? _notes;
 
@@ -65,6 +70,20 @@ public sealed class Orchestrator(
         using var captureCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
         var captureTask = audioSource.CaptureAsync(channel.Writer, captureCts.Token);
 
+        IAudioSource? loopback = null;
+        Channel<byte[]>? loopbackChannel = null;
+        if (MeetingMode)
+        {
+            loopback = audioSourceFactory.CreateLoopback();
+            loopbackChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(
+                BufferedAudioSeconds * 1000 / AudioChunkMilliseconds)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleWriter = true,
+                SingleReader = true,
+            });
+        }
+
         if (NotesMode)
         {
             var notesPath = Path.Combine(Directory.GetCurrentDirectory(),
@@ -80,6 +99,9 @@ public sealed class Orchestrator(
             display.History.AppendLine("   Flags: --continue / -c   pick a previous session to resume");
             display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
         }
+
+        if (MeetingMode)
+            display.History.AppendLine("🔊 Meeting mode — mic + system output, lines labeled Me/Others.");
 
         if (claudeService is { ContinueSession: true })
             PrintContinuedSession();
@@ -103,10 +125,18 @@ public sealed class Orchestrator(
                 Display.HistoryColor.Warn);
         }
 
+        var loopbackTask = loopback is null
+            ? null
+            : loopback.CaptureAsync(loopbackChannel!.Writer, captureCts.Token);
         var claudeEvents = claudeService?.RunAsync(cts.Token);
         var claudeTask = claudeEvents is null ? null : ConsumeClaudeEventsAsync(claudeEvents, cts.Token);
-        var transcribeTask = RunTranscriptionLoopAsync(
-            channel.Reader.ReadAllAsync(cts.Token), captureCts, cts.Token);
+        var transcribeTask = MeetingMode
+            ? RunMeetingTranscriptionLoopAsync(
+                channel.Reader.ReadAllAsync(cts.Token),
+                loopbackChannel!.Reader.ReadAllAsync(cts.Token),
+                captureCts, cts.Token)
+            : RunTranscriptionLoopAsync(
+                channel.Reader.ReadAllAsync(cts.Token), captureCts, cts.Token);
         var micTask = MonitorMicAsync(cts.Token);
 
         void OnCancelKeyPress(object? sender, System.ConsoleCancelEventArgs e)
@@ -144,6 +174,8 @@ public sealed class Orchestrator(
 
             await cts.CancelAsync();
             await Task.WhenAll(captureTask, transcribeTask, micTask);
+            if (loopbackTask is not null)
+                await loopbackTask;
             if (claudeTask is not null)
                 await claudeTask;
         }
@@ -152,6 +184,7 @@ public sealed class Orchestrator(
             System.Console.CancelKeyPress -= OnCancelKeyPress;
         }
 
+        (loopback as IDisposable)?.Dispose();
         _notes?.Dispose();
         display.History.AppendLine("✅ Done.");
     }
@@ -242,13 +275,28 @@ public sealed class Orchestrator(
 
     private async Task RunTranscriptionLoopAsync(
         IAsyncEnumerable<byte[]> audioInput, CancellationTokenSource captureCts, CancellationToken ct)
+        => await ConsumeTranscriptionEvents(
+            transcriptionService.TranscribeAsync(audioInput, ct), captureCts, ct);
+
+    /// <summary>Meeting mode: two sources, tagged events, same consumer.</summary>
+    private async Task RunMeetingTranscriptionLoopAsync(
+        IAsyncEnumerable<byte[]> micInput,
+        IAsyncEnumerable<byte[]> loopbackInput,
+        CancellationTokenSource captureCts,
+        CancellationToken ct)
+        => await ConsumeTranscriptionEvents(
+            transcriptionService.TranscribeMeetingAsync(micInput, loopbackInput, ct), captureCts, ct);
+
+    private async Task ConsumeTranscriptionEvents(
+        IAsyncEnumerable<TranscriptionEvent> events,
+        CancellationTokenSource captureCts,
+        CancellationToken ct)
     {
-        // WithCancellation is required: the transcription services are async
-        // iterators with [EnumeratorCancellation], so their ct comes from here,
+        // WithCancellation is required: the transcription service is an async
+        // iterator with [EnumeratorCancellation], so its ct comes from here,
         // not from the TranscribeAsync argument. Without it, a stalled receive
-        // (e.g. a silent server after a 401) can never be interrupted and
-        // Ctrl+C hangs in Task.WhenAll.
-        await foreach (var evt in transcriptionService.TranscribeAsync(audioInput, ct).WithCancellation(ct))
+        // can never be interrupted and Ctrl+C hangs in Task.WhenAll.
+        await foreach (var evt in events.WithCancellation(ct))
         {
             switch (evt)
             {
@@ -263,6 +311,9 @@ public sealed class Orchestrator(
                     var sentence = completed.Transcript.Trim();
                     if (!string.IsNullOrWhiteSpace(sentence))
                     {
+                        if (MeetingMode)
+                            sentence = (completed.FromMic ? "Me: " : "Others: ") + sentence;
+
                         if (NotesMode)
                             AppendNote(sentence);
                         else

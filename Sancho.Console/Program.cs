@@ -99,13 +99,33 @@ static string? ChooseSession(IReadOnlyList<AgentService.SessionSummary> sessions
 /// Creates the agent backend. The factory guarantees a usable executable:
 /// not installed or not logged in fails here, before the orchestrator starts.
 /// </summary>
-static ClaudeCodeAgentService CreateAgent(string agentName, string? resumeSessionId, IServiceProvider sp)
+static AgentService CreateAgent(string agentName, string? resumeSessionId, IServiceProvider sp) => agentName switch
 {
-    ClaudeCodeAgentService.VerifyAvailable(agentName);
+    "claude" => CreateClaudeAgent(resumeSessionId, sp),
+    "cursor" => CreateCursorAgent(resumeSessionId, sp),
+    _ => throw new InvalidOperationException($"Agent '{agentName}' is not supported yet."),
+};
+
+static AgentService CreateClaudeAgent(string? resumeSessionId, IServiceProvider sp)
+{
+    ClaudeCodeAgentService.VerifyAvailable("claude");
     return new ClaudeCodeAgentService(
-        agentName, null, resumeSessionId,
+        "claude", null, resumeSessionId,
         sp.GetRequiredService<ILogger<ClaudeCodeAgentService>>());
 }
+
+static AgentService CreateCursorAgent(string? resumeSessionId, IServiceProvider sp)
+{
+    CursorAgentService.VerifyAvailable();
+    return new CursorAgentService(
+        resumeSessionId, sp.GetRequiredService<ILogger<CursorAgentService>>());
+}
+
+/// <summary>Session list for the selected agent, for the --continue picker.</summary>
+static IReadOnlyList<AgentService.SessionSummary> ListAgentSessions(string agentName, string targetDirectory) =>
+    agentName == "cursor"
+        ? CursorAgentService.ListSessions(CursorAgentService.DefaultSessionRoot(), targetDirectory)
+        : ClaudeCodeAgentService.ListSessions(ClaudeCodeAgentService.DefaultSessionRoot(), targetDirectory);
 
 // ── Run path ───────────────────────────────────────────────────────
 
@@ -123,9 +143,9 @@ async Task<int> Run(LogFileWriter? logFile)
     // The agent backend: config key or --agent flag; claude is the default.
     // More agents (cursor, codex, hermes) land behind the same seam later.
     var agentName = (cliArgs.Agent ?? stored.Agent ?? "claude").ToLowerInvariant();
-    if (agentName is not "claude")
+    if (agentName is not ("claude" or "cursor"))
     {
-        AnsiConsole.MarkupLine($"[red]Agent '{agentName}' is not supported yet. Use 'claude'.[/]");
+        AnsiConsole.MarkupLine($"[red]Agent '{agentName}' is not supported yet. Use 'claude' or 'cursor'.[/]");
         return 2;
     }
 
@@ -210,11 +230,10 @@ async Task<int> Run(LogFileWriter? logFile)
     else
     {
         var resumeSessionId = cliArgs.Continue
-            ? ChooseSession(ClaudeCodeAgentService.ListSessions(
-                ClaudeCodeAgentService.DefaultSessionRoot(), targetDir))
+            ? ChooseSession(ListAgentSessions(agentName, targetDir))
             : null;
 
-        services.AddSingleton<ClaudeCodeAgentService>(sp =>
+        services.AddSingleton<AgentService>(sp =>
             CreateAgent(agentName, resumeSessionId, sp));
         services.AddSingleton<Orchestrator>();
     }

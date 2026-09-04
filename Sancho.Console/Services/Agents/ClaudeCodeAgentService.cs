@@ -80,7 +80,7 @@ public sealed class ClaudeCodeAgentService : AgentService
                     id,
                     File.GetLastWriteTime(file),
                     GetSessionTitle(sessionRoot, targetDirectory, id),
-                    GetSessionPreview(file));
+                    SessionJson.GetSessionPreview(file, SessionJson.Format.ClaudeCode));
             })
             .OrderByDescending(s => s.LastActivity)
             .ToList();
@@ -97,7 +97,9 @@ public sealed class ClaudeCodeAgentService : AgentService
     public override IReadOnlyList<(bool IsUser, string Text)> GetSessionMessages()
     {
         var file = ResolveSessionFile();
-        return file is null ? Array.Empty<(bool IsUser, string Text)>() : ReadMessages(file);
+        return file is null
+            ? Array.Empty<(bool IsUser, string Text)>()
+            : SessionJson.ReadMessages(file, SessionJson.Format.ClaudeCode);
     }
 
     private string? ResolveSessionFile()
@@ -118,7 +120,7 @@ public sealed class ClaudeCodeAgentService : AgentService
     }
 
     private static string GetSessionsDirectory(string sessionRoot, string targetDirectory) =>
-        Path.Combine(sessionRoot, "projects", EncodeProjectDirectory(targetDirectory));
+        Path.Combine(sessionRoot, "projects", SessionJson.EncodeProjectDirectory(targetDirectory));
 
     /// <summary>Reads the saved display name for a session, if any.</summary>
     private static string? GetSessionTitle(string sessionRoot, string targetDirectory, string id)
@@ -138,71 +140,6 @@ public sealed class ClaudeCodeAgentService : AgentService
         }
     }
 
-    private static IReadOnlyList<(bool IsUser, string Text)> ReadMessages(string file)
-    {
-        var messages = new List<(bool IsUser, string Text)>();
-        foreach (var line in File.ReadLines(file))
-        {
-            if (string.IsNullOrWhiteSpace(line))
-                continue;
-
-            try
-            {
-                using var doc = JsonDocument.Parse(line);
-                var root = doc.RootElement;
-
-                if (root.TryGetProperty("type", out var typeEl) && typeEl.GetString() is { } type
-                    && type is "user" or "assistant"
-                    && root.TryGetProperty("message", out var message))
-                {
-                    var role = message.TryGetProperty("role", out var roleEl) ? roleEl.GetString() : null;
-                    if (role is not ("user" or "assistant"))
-                        continue;
-
-                    var text = ExtractText(message);
-                    if (!string.IsNullOrWhiteSpace(text))
-                        messages.Add((role == "user", text));
-                }
-            }
-            catch (JsonException)
-            {
-                // Malformed line — skip it.
-            }
-        }
-
-        return messages;
-    }
-
-    private static string GetSessionPreview(string file)
-    {
-        foreach (var line in File.ReadLines(file))
-        {
-            if (string.IsNullOrWhiteSpace(line))
-                continue;
-
-            try
-            {
-                using var doc = JsonDocument.Parse(line);
-                var root = doc.RootElement;
-
-                if (root.TryGetProperty("type", out var typeEl) && typeEl.GetString() is { } type
-                    && type is "user" or "assistant"
-                    && root.TryGetProperty("message", out var message))
-                {
-                    var text = ExtractText(message);
-                    if (!string.IsNullOrWhiteSpace(text))
-                        return text.Substring(0, Math.Min(120, text.Length));
-                }
-            }
-            catch (JsonException)
-            {
-                // Malformed line — skip it.
-            }
-        }
-
-        return "(no messages)";
-    }
-
     /// <summary>The claude-family session store: <c>CLAUDE_CONFIG_DIR</c> or <c>~/.claude</c>.</summary>
     public static string DefaultSessionRoot()
     {
@@ -210,40 +147,6 @@ public sealed class ClaudeCodeAgentService : AgentService
         return string.IsNullOrWhiteSpace(configured)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude")
             : configured;
-    }
-
-    private static string EncodeProjectDirectory(string path)
-    {
-        var sb = new StringBuilder();
-        foreach (var c in path)
-            sb.Append(char.IsLetterOrDigit(c) ? c : '-');
-        return sb.ToString();
-    }
-
-    private static string ExtractText(JsonElement message)
-    {
-        if (!message.TryGetProperty("content", out var content))
-            return "";
-
-        if (content.ValueKind == JsonValueKind.String)
-            return content.GetString() ?? "";
-
-        if (content.ValueKind != JsonValueKind.Array)
-            return "";
-
-        var sb = new StringBuilder();
-        foreach (var block in content.EnumerateArray())
-        {
-            if (block.TryGetProperty("type", out var bt) && bt.GetString() == "text"
-                && block.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String)
-            {
-                if (sb.Length > 0)
-                    sb.Append(' ');
-                sb.Append(t.GetString());
-            }
-        }
-
-        return sb.ToString();
     }
 
     /// <summary>Default prompt written to <c>.sancho.md</c> when it is missing.</summary>

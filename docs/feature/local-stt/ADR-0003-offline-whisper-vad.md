@@ -40,11 +40,17 @@ Keep sherpa-onnx and the ADR-0002 pipeline; swap the recognizer:
 
 ## Status note
 
-**The model size may need revisiting.** small.en was chosen for accuracy;
-if decode latency or the ~460 MB download bothers users, `base.en`
+**Resolved 2026-09-05: model size is now selectable.** `sancho --model` and
+`config set model` accept `tiny`, `base`, `small` (default) or `medium` —
+each size is its own HF repo and models directory, so switching sizes only
+costs a download. `WhisperModels` in the code holds the mapping.
+
+**Original note (kept for context):** small.en was chosen for accuracy; if
+decode latency or the ~460 MB download bothers users, `base.en`
 (~140 MB, ~1.5–2× faster decode) is a file-and-config swap. Non-English
-speakers would want multilingual `base` (~150 MB, auto language detection).
-GPU variants exist, but CPU keeps the cross-platform, no-driver story.
+speakers would want multilingual `base` (~150 MB, auto language detection) —
+still an open option. GPU variants exist, but CPU keeps the cross-platform,
+no-driver story.
 
 ## Consequences
 

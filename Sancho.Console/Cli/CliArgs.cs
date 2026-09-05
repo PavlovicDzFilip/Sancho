@@ -7,6 +7,7 @@ public sealed class UsageError(string message) : Exception(message);
 public sealed record CliArgs(
     bool Continue,
     string? Agent,
+    string? Model,
     string? Command,
     string[] CommandArgs,
     bool ShowHelp,
@@ -17,13 +18,14 @@ public sealed record CliArgs(
 {
     /// <summary>
     /// Parses the command line: <c>-c</c>, <c>--log</c>, <c>--notes</c>,
-    /// <c>--meeting</c>, <c>--agent</c>, and the <c>config</c> subcommand.
-    /// Unknown flags/commands throw <see cref="UsageError"/>.
+    /// <c>--meeting</c>, <c>--agent</c>, <c>--model</c>, and the <c>config</c>
+    /// subcommand. Unknown flags/commands throw <see cref="UsageError"/>.
     /// </summary>
     public static CliArgs Parse(string[] args)
     {
         var continueSession = false;
         string? agent = null;
+        string? model = null;
         var log = false;
         var notes = false;
         var meeting = false;
@@ -35,9 +37,9 @@ public sealed record CliArgs(
             switch (arg)
             {
                 case "-h" or "--help":
-                    return new CliArgs(false, null, null, [], true, false, false, false, false);
+                    return new CliArgs(false, null, null, null, [], true, false, false, false, false);
                 case "-v" or "--version":
-                    return new CliArgs(false, null, null, [], false, true, false, false, false);
+                    return new CliArgs(false, null, null, null, [], false, true, false, false, false);
                 case "-c" or "--continue":
                     continueSession = true;
                     break;
@@ -56,14 +58,11 @@ public sealed record CliArgs(
                         var (name, inlineValue) = SplitFlag(arg);
                         if (name == "--agent")
                         {
-                            var value = inlineValue;
-                            if (value is null && i + 1 < args.Length &&
-                                !args[i + 1].StartsWith("--", StringComparison.Ordinal))
-                            {
-                                value = args[++i];
-                            }
-
-                            agent = value ?? throw new UsageError("'--agent' requires a value.");
+                            agent = ReadFlagValue(name, inlineValue, args, ref i);
+                        }
+                        else if (name == "--model")
+                        {
+                            model = ReadFlagValue(name, inlineValue, args, ref i);
                         }
                         else
                         {
@@ -82,10 +81,26 @@ public sealed record CliArgs(
         {
             if (positional[0] is not "config")
                 throw new UsageError($"Unknown command '{positional[0]}'.");
-            return new CliArgs(continueSession, agent, "config", positional.Skip(1).ToArray(), false, false, log, notes, meeting);
+            return new CliArgs(continueSession, agent, model, "config", positional.Skip(1).ToArray(), false, false, log, notes, meeting);
         }
 
-        return new CliArgs(continueSession, agent, null, [], false, false, log, notes, meeting);
+        return new CliArgs(continueSession, agent, model, null, [], false, false, log, notes, meeting);
+    }
+
+    /// <summary>
+    /// Reads a value-flag's value: inline (<c>--flag=x</c>) or as the next
+    /// argument; a following flag is never consumed as the value.
+    /// </summary>
+    private static string ReadFlagValue(string name, string? inlineValue, string[] args, ref int i)
+    {
+        var value = inlineValue;
+        if (value is null && i + 1 < args.Length &&
+            !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+        {
+            value = args[++i];
+        }
+
+        return value ?? throw new UsageError($"'{name}' requires a value.");
     }
 
     private static (string Name, string? Value) SplitFlag(string arg)

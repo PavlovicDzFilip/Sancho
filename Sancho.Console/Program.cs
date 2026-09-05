@@ -168,6 +168,15 @@ async Task<int> Run(LogFileWriter? logFile)
         return 2;
     }
 
+    // The whisper model size: config key or --model flag; small is the default.
+    var modelName = (cliArgs.Model ?? stored.Model ?? WhisperModels.DefaultSize).ToLowerInvariant();
+    var whisperSpec = WhisperModels.TryGet(modelName);
+    if (whisperSpec is null)
+    {
+        AnsiConsole.MarkupLine($"[red]Model '{modelName}' is not supported. Use 'tiny', 'base', 'small' or 'medium'.[/]");
+        return 2;
+    }
+
     // ffmpeg is the capture backend on Linux/macOS; Windows uses the bundled
     // NAudio package and needs nothing beyond the .NET runtime.
     if (!OperatingSystem.IsWindows())
@@ -228,6 +237,7 @@ async Task<int> Run(LogFileWriter? logFile)
     services.AddSingleton<Display>();
     services.AddSingleton<MicLevelMonitor>();
     services.AddSingleton<AudioSourceFactory>();
+    services.AddSingleton<WhisperModelSpec>(whisperSpec); // resolved above: defaults < config < flags
     services.AddSingleton<LocalSttModels>();
     services.AddSingleton<LocalTranscriptionService>();
 

@@ -9,14 +9,14 @@ namespace Sancho.Console.Transcription;
 
 /// <summary>
 /// Local speech-to-text via sherpa-onnx: silero VAD for utterance
-/// segmentation + offline (non-streaming) whisper small.en int8 for decode.
+/// segmentation + offline (non-streaming) whisper .en int8 for decode
+/// (size selected via <c>--model</c> / the <c>model</c> config key;
+/// default small.en).
 /// Whisper sees the whole utterance — long utterances are decoded in 28 s
 /// windows internally and joined, so a single transcript still arrives per
 /// utterance. Segmented utterances arrive as
 /// <see cref="TranscriptionEvent.Completed"/> events at utterance end —
 /// there are no live deltas. No audio ever leaves the machine.
-/// Model-size note: small.en may be worth revisiting (see
-/// <c>docs/feature/local-stt/ADR-0003-offline-whisper-vad.md</c>).
 /// </summary>
 /// <remarks>
 /// Events flow from the producer through an unbounded channel: the iterator
@@ -377,7 +377,7 @@ public sealed class LocalTranscriptionService(
     private static VoiceActivityDetector CreateVad(string modelDir)
     {
         var config = new VadModelConfig();
-        config.SileroVad.Model = Path.Combine(modelDir, "silero_vad.onnx");
+        config.SileroVad.Model = Path.Combine(modelDir, LocalSttModels.SileroVadFileName);
         config.SileroVad.Threshold = 0.5f;
         // 1.5 s of silence closes a segment: with 0.5 s every mid-sentence
         // pause split the utterance, and whisper hallucinated on the short
@@ -396,21 +396,23 @@ public sealed class LocalTranscriptionService(
         return new VoiceActivityDetector(config, 660); // buffer must exceed MaxSpeechDuration
     }
 
-    /// <summary>Builds the recognizer for the offline whisper small.en int8 model.</summary>
-    private static OfflineRecognizer CreateRecognizer(string modelDir)
+    /// <summary>Builds the recognizer for the selected offline whisper .en int8 model.</summary>
+    private OfflineRecognizer CreateRecognizer(string modelDir)
     {
         var config = new OfflineRecognizerConfig();
         config.FeatConfig.SampleRate = 16000; // the model's rate; capture audio is resampled to it
         config.FeatConfig.FeatureDim = 80;
         config.ModelConfig.Whisper.Encoder =
-            Path.Combine(modelDir, "small.en-encoder.int8.onnx");
+            Path.Combine(modelDir, models.Spec.EncoderFile);
         config.ModelConfig.Whisper.Decoder =
-            Path.Combine(modelDir, "small.en-decoder.int8.onnx");
+            Path.Combine(modelDir, models.Spec.DecoderFile);
         config.ModelConfig.Whisper.Language = ""; // auto-detect; the .en model is English-only
         config.ModelConfig.Whisper.Task = "transcribe";
-        config.ModelConfig.Tokens = Path.Combine(modelDir, "small.en-tokens.txt");
+        config.ModelConfig.Tokens = Path.Combine(modelDir, models.Spec.TokensFile);
         config.ModelConfig.Provider = "cpu";
-        config.ModelConfig.NumThreads = 4; // whisper decode is heavier than zipformer was
+        // whisper decode is heavier than zipformer was. 4 is uniform across
+        // sizes — the count sizes ONNX Runtime's thread pool, not the model.
+        config.ModelConfig.NumThreads = 4;
         config.DecodingMethod = "greedy_search";
         return new OfflineRecognizer(config);
     }

@@ -9,7 +9,7 @@ public sealed class ConfigException(string message) : Exception(message);
 public static class ConfigStore
 {
     /// <summary>Keys accepted by <c>sancho config get/set</c>.</summary>
-    public static readonly string[] KnownKeys = ["agent"];
+    public static readonly string[] KnownKeys = ["agent", "model"];
 
     /// <summary>
     /// Loads the config file. A missing file yields defaults; malformed JSON
@@ -49,6 +49,7 @@ public static class ConfigStore
     public static SanchoConfig WithKey(SanchoConfig config, string key, string? value) => key switch
     {
         "agent" => config with { Agent = EmptyToNull(value) },
+        "model" => config with { Model = EmptyToNull(value) },
         _ => throw new ConfigException($"Unknown config key '{key}'. Valid keys: {string.Join(", ", KnownKeys)}."),
     };
 
@@ -56,6 +57,7 @@ public static class ConfigStore
     public static string? GetValue(SanchoConfig config, string key) => key switch
     {
         "agent" => config.Agent,
+        "model" => config.Model,
         _ => throw new ConfigException($"Unknown config key '{key}'. Valid keys: {string.Join(", ", KnownKeys)}."),
     };
 

@@ -4,39 +4,39 @@ using Sancho.Console.Config;
 namespace Sancho.Console.Transcription;
 
 /// <summary>
-/// Downloads the local speech-to-text model files (sherpa-onnx offline
-/// whisper small.en int8 + silero VAD) into <c>~/.sancho/models/</c> on
-/// first use. Files already on disk are reused; downloads land in
-/// <c>.part</c> files and are moved into place only when complete, so an
-/// interrupted download never leaves a half-written model behind.
-/// Model-size note: small.en was chosen for accuracy and may be worth
-/// revisiting (base.en for faster decode, multilingual base for other
-/// languages) — see docs/feature/local-stt/ADR-0003.
+/// Downloads the local speech-to-text model files — the selected sherpa-onnx
+/// whisper .en int8 size (see <see cref="WhisperModels"/>) plus the shared
+/// silero VAD — into <c>~/.sancho/models/&lt;size-dir&gt;/</c> on first use.
+/// Files already on disk are reused; downloads land in <c>.part</c> files and
+/// are moved into place only when complete, so an interrupted download never
+/// leaves a half-written model behind. Each size keeps its own directory, so
+/// switching sizes only costs the new download.
 /// </summary>
-public sealed class LocalSttModels(ILogger<LocalSttModels> logger)
+public sealed class LocalSttModels(ILogger<LocalSttModels> logger, WhisperModelSpec spec)
 {
-    public const string ModelDirName = "sherpa-onnx-whisper-small.en";
+    /// <summary>The selected whisper size; the recognizer reads its file names.</summary>
+    public WhisperModelSpec Spec { get; } = spec;
 
-    private const string BaseUrl =
-        "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-small.en/resolve/main/";
+    /// <summary>The VAD model is shared by every whisper size.</summary>
+    public const string SileroVadFileName = "silero_vad.onnx";
+
+    private const string VadUrl =
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
 
     // The zipformer model predates the whisper engine (ADR-0003); its files
     // are no longer read, so a completed download cleans the stale directory.
     private const string SupersededModelDirName = "sherpa-onnx-zipformer-en-2023-06-26";
 
-    // Dedicated client: the ~230 MB encoder can exceed the app-wide 45 s
-    // HttpClient timeout on slow connections, so downloads get their own.
+    // Dedicated client: the encoders can exceed the app-wide 45 s HttpClient
+    // timeout on slow connections, so downloads get their own.
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(30) };
 
-    private static readonly (string File, string Url)[] Files =
+    private (string File, string Url)[] Files =>
     [
-        ("small.en-encoder.int8.onnx",
-         BaseUrl + "small.en-encoder.int8.onnx"),
-        ("small.en-decoder.int8.onnx",
-         BaseUrl + "small.en-decoder.int8.onnx"),
-        ("small.en-tokens.txt", BaseUrl + "small.en-tokens.txt"),
-        ("silero_vad.onnx",
-         "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"),
+        (Spec.EncoderFile, Spec.EncoderUrl),
+        (Spec.DecoderFile, Spec.DecoderUrl),
+        (Spec.TokensFile, Spec.TokensUrl),
+        (SileroVadFileName, VadUrl),
     ];
 
     /// <summary>
@@ -45,18 +45,19 @@ public sealed class LocalSttModels(ILogger<LocalSttModels> logger)
     /// </summary>
     public async Task<string?> EnsureDownloadedAsync(CancellationToken ct)
     {
-        var dir = Path.Combine(SanchoPaths.ModelsDir, ModelDirName);
+        var dir = Path.Combine(SanchoPaths.ModelsDir, Spec.ModelDirName);
         Directory.CreateDirectory(dir);
 
-        for (var i = 0; i < Files.Length; i++)
+        var files = Files;
+        for (var i = 0; i < files.Length; i++)
         {
-            var (file, url) = Files[i];
+            var (file, url) = files[i];
             var path = Path.Combine(dir, file);
             if (File.Exists(path) && new FileInfo(path).Length > 0)
                 continue;
 
             logger.LogInformation(
-                "Downloading speech model {Index}/{Count}: {File}…", i + 1, Files.Length, file);
+                "Downloading speech model {Index}/{Count}: {File}…", i + 1, files.Length, file);
             var partPath = path + ".part";
             try
             {

@@ -34,14 +34,16 @@ public class DecodeTests
         if (fixture is null)
             Assert.Skip("No audio fixture present — record the expected phrase into Sancho.Tests/fixtures/.");
 
-        var modelDir = Path.Combine(SanchoPaths.ModelsDir, LocalSttModels.ModelDirName);
+        // Pinned to small.en: the expected phrase below is only valid for
+        // that model's greedy decode, regardless of the user's --model choice.
+        var modelDir = Path.Combine(SanchoPaths.ModelsDir, WhisperModels.Small.ModelDirName);
         if (!Directory.Exists(modelDir))
-            Assert.Skip("Whisper model not downloaded yet — run sancho --transcription local once.");
+            Assert.Skip("Whisper model not downloaded yet — run sancho once (downloads small.en).");
 
         var pcm = LoadAs24kMonoPcm16(fixture);
         var service = new LocalTranscriptionService(
             NullLogger<LocalTranscriptionService>.Instance,
-            new LocalSttModels(NullLogger<LocalSttModels>.Instance));
+            new LocalSttModels(NullLogger<LocalSttModels>.Instance, WhisperModels.Small));
 
         var completed = new List<string>();
         await foreach (var evt in service.TranscribeAsync(

@@ -1,6 +1,6 @@
 # Sancho
 
-A voice assistant for the terminal: microphone → transcription → Claude CLI. Speech-to-text runs on-device in `local` mode (sherpa-onnx) — no cloud round-trip, your voice never leaves the machine. OpenAI Realtime remains the default backend, and `record` mode saves your voice to a WAV file without transcribing.
+A voice assistant for the terminal: microphone → transcription → Claude CLI. Speech-to-text runs fully on-device (sherpa-onnx whisper + silero VAD) — no cloud round-trip, your voice never leaves the machine.
 
 ## Install
 
@@ -36,24 +36,24 @@ sancho --help
 
 ## Transcription
 
-Sancho transcribes on-device with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (offline whisper small.en int8, segmented by silero VAD) — no network, no API key, and the audio never leaves your machine:
+Sancho transcribes on-device with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (offline whisper .en int8 — `tiny`, `base`, `small` (default) or `medium`, segmented by silero VAD) — no network, no API key, and the audio never leaves your machine:
 
 ```bash
 sancho
 ```
 
-Utterances arrive when you stop speaking (~1 s after), not word-by-word. The first run downloads the speech model (~380 MB) into `~/.sancho/models/`. See `docs/feature/local-stt/` for how the engine was chosen.
+Utterances arrive when you stop speaking (~1 s after), not word-by-word. The first run downloads the selected model (tiny ~105 MB, base ~140 MB, small ~380 MB, medium ~945 MB) into `~/.sancho/models/`; each size keeps its own directory. See `docs/feature/local-stt/` for how the engine was chosen.
 
 ## Configuration
 
 ```bash
 sancho config get [key]
-sancho config set transcription local
+sancho config set model small
 ```
 
 The system prompt is read from `.sancho.md` in the directory you run Sancho from. If the file is missing, Sancho creates it with a default prompt and tells you — edit it to customize.
 
-The config file currently holds no keys — it is reserved for future settings.
+Config keys: `agent` (claude | cursor | hermes | codex), `model` (tiny | base | small | medium).
 
 ## Known issues
 

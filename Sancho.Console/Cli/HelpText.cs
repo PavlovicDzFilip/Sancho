@@ -21,6 +21,7 @@ public static class HelpText
 
         Options:
           --agent <name>                   Agent backend: claude (default), cursor, hermes or codex
+          --model <size>                   Whisper model size: tiny, base, small (default) or medium
           --meeting                        Transcribe your mic + the system output (other meeting
                                            participants) — lines labeled Me/Others; Windows only
           --notes                          Transcribe to sancho-notes-YYYY-MM-DD.md in the current
@@ -37,10 +38,13 @@ public static class HelpText
           On-device speech-to-text via sherpa-onnx whisper — your voice never
           leaves the machine.
           Utterances arrive when you stop speaking (~1 s after).
-          First run downloads the speech model (~380 MB) into ~/.sancho/models.
+          First run downloads the selected model into ~/.sancho/models/ —
+          tiny ~105 MB, base ~140 MB, small ~380 MB, medium ~945 MB. Each size
+          keeps its own directory, so switching sizes downloads the new one.
 
         Config:
           File:  ~/.sancho/config.json    (SANCHO_CONFIG_DIR overrides the directory)
           Keys:  agent                    (claude | cursor | hermes | codex)
+                 model                    (tiny | base | small | medium)
         """;
 }

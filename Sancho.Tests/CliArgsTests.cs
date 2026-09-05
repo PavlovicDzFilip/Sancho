@@ -12,6 +12,7 @@ public class CliArgsTests
 
         Assert.False(a.Continue);
         Assert.Null(a.Agent);
+        Assert.Null(a.Model);
         Assert.Null(a.Command);
         Assert.False(a.ShowHelp);
         Assert.False(a.ShowVersion);
@@ -68,6 +69,36 @@ public class CliArgsTests
         // --agent followed by another flag: the parser must not swallow
         // "--notes" as the value — it requires one and errors.
         Assert.Throws<UsageError>(() => CliArgs.Parse(["--agent", "--notes"]));
+    }
+
+    [Fact]
+    public void ModelFlag_WithSeparateValue()
+    {
+        var a = CliArgs.Parse(["--model", "tiny"]);
+
+        Assert.Equal("tiny", a.Model);
+    }
+
+    [Fact]
+    public void ModelFlag_WithInlineValue()
+    {
+        var a = CliArgs.Parse(["--model=medium"]);
+
+        Assert.Equal("medium", a.Model);
+    }
+
+    [Fact]
+    public void ModelFlag_WithoutValueThrows()
+    {
+        Assert.Throws<UsageError>(() => CliArgs.Parse(["--model"]));
+    }
+
+    [Fact]
+    public void ModelFlag_DoesNotConsumeNextFlag_Throws()
+    {
+        // --model followed by another flag: the parser must not swallow
+        // "--notes" as the value — it requires one and errors.
+        Assert.Throws<UsageError>(() => CliArgs.Parse(["--model", "--notes"]));
     }
 
     [Fact]

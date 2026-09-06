@@ -38,9 +38,10 @@ public static class HelpText
           On-device speech-to-text via sherpa-onnx whisper — your voice never
           leaves the machine.
           Utterances arrive when you stop speaking (~1 s after).
-          First run downloads the selected model into ~/.sancho/models/ —
-          tiny ~105 MB, base ~140 MB, small ~380 MB, medium ~945 MB. Each size
-          keeps its own directory, so switching sizes downloads the new one.
+          The selected model downloads at startup (when missing) into
+          ~/.sancho/models/ — tiny ~105 MB, base ~140 MB, small ~380 MB,
+          medium ~945 MB. Each size keeps its own directory, so switching
+          sizes downloads the new one.
 
         Config:
           File:  ~/.sancho/config.json    (SANCHO_CONFIG_DIR overrides the directory)

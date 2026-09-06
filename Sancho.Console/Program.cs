@@ -272,6 +272,27 @@ async Task<int> Run(LogFileWriter? logFile)
         using var provider = services.BuildServiceProvider();
 
         using var cts = new CancellationTokenSource();
+
+        // ── Model download ─────────────────────────────────────────────
+        // The selected whisper size was resolved above; download it now, at
+        // the very start, so the run never stalls mid-transcription waiting
+        // for model files. (The transcription service re-checks later, but
+        // that is a fast path once the files are on disk.)
+        try
+        {
+            var models = provider.GetRequiredService<LocalSttModels>();
+            if (await models.EnsureDownloadedAsync(cts.Token) is null)
+            {
+                AnsiConsole.MarkupLine(
+                    "[red]Could not download the speech model — check your connection and restart Sancho.[/]");
+                return 2;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return 0; // cancelled before the run began (Ctrl+C)
+        }
+
         var orchestrator = provider.GetRequiredService<Orchestrator>();
 
         await orchestrator.RunAsync(cts.Token);

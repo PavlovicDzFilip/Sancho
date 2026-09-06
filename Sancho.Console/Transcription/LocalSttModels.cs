@@ -6,7 +6,9 @@ namespace Sancho.Console.Transcription;
 /// <summary>
 /// Downloads the local speech-to-text model files — the selected sherpa-onnx
 /// whisper .en int8 size (see <see cref="WhisperModels"/>) plus the shared
-/// silero VAD — into <c>~/.sancho/models/&lt;size-dir&gt;/</c> on first use.
+/// silero VAD — into <c>~/.sancho/models/&lt;size-dir&gt;/</c>. The download
+/// runs at startup (Program.cs, right after the size is resolved), before
+/// capture or transcription begin.
 /// Files already on disk are reused; downloads land in <c>.part</c> files and
 /// are moved into place only when complete, so an interrupted download never
 /// leaves a half-written model behind. Each size keeps its own directory, so

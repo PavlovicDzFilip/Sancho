@@ -113,8 +113,10 @@ public sealed class LocalTranscriptionService(
     {
         try
         {
-            // Model files are downloaded once on first use; failures become a
-            // Failed event instead of an exception so the UI shows a clear message.
+            // Program.cs downloads the model at startup; this is the fast-path
+            // re-check (and the fallback download if the files vanished mid-run).
+            // Failures become a Failed event instead of an exception so the UI
+            // shows a clear message.
             var modelDir = await models.EnsureDownloadedAsync(ct);
             if (modelDir is null)
             {

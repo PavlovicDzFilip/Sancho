@@ -18,6 +18,7 @@ foreach ($rid in $rids) {
         -r $rid `
         --self-contained false `
         -p:PublishSingleFile=true `
+        -p:IncludeNativeLibrariesForSelfExtract=true `
         -p:InvariantGlobalization=true `
         -o (Join-Path $root "artifacts\publish\$rid")
     if ($LASTEXITCODE -ne 0) {

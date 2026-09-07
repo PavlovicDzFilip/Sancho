@@ -45,6 +45,7 @@
 - `scripts\publish.ps1` (Windows) and `scripts\publish.sh` (macOS/Linux) publish framework-dependent single-file builds for all RIDs: `win-x64`, `linux-x64`, `linux-arm64`, `osx-arm64`, `osx-x64` (`artifacts/` is gitignored).
 - Output: `artifacts\publish\<rid>\` per RID, plus release-ready assets staged in `artifacts\release\` named per convention (`sancho.exe`, `sancho-<os>-<arch>`) — these are what `scripts\install.ps1` / `scripts\install.sh` download.
 - Framework-dependent single-file (`PublishSingleFile=true`, `--self-contained false`): one executable per platform, requires the .NET runtime — both installers install the SDK when missing.
+- Native libraries (sherpa-onnx + onnxruntime, per-RID `org.k2fsa.sherpa.onnx.runtime.*` packages) are bundled inside the executable via `IncludeNativeLibrariesForSelfExtract=true` — they extract to a temp dir at first use, so a lone `sancho` runs from any directory. Never ship the loose native files next to the executable; keep the bundle flag in both publish scripts.
 - Runtime dependencies handled by the installers: .NET 10 SDK on all platforms, plus ffmpeg on macOS/Linux (mic capture; apt/dnf/pacman/zypper/apk/brew).
 - No AOT, no native toolchain required. `InvariantGlobalization=true` stays (safe: the app is English-only).
 

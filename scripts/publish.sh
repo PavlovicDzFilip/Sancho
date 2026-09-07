@@ -30,6 +30,7 @@ for rid in "${rids[@]}"; do
         -r "$rid" \
         --self-contained false \
         -p:PublishSingleFile=true \
+        -p:IncludeNativeLibrariesForSelfExtract=true \
         -p:InvariantGlobalization=true \
         -o "$root/artifacts/publish/$rid"
 

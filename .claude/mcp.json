@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "time": {
-      "command": "npx",
-      "args": ["-y", "mcp-time-server"]
-    }
-  }
-}

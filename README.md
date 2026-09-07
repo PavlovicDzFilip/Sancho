@@ -26,6 +26,10 @@ mic → on-device whisper transcription → your agent CLI
 
 Sancho is a vibe-coded project, built with [Claude Code](https://claude.com/claude-code) — features were talked through rather than specced, and not much time went into designing exactly how it all fits together. There's a reasonable separation of concerns (audio capture, transcription, agent integration each live in their own place), but it wasn't whiteboarded first. The code quality is okay — not perfect, but good enough for what the tool does — and it's honest about being that. If a bit of it looks like it grew organically: it did.
 
+## Why "Sancho"?
+
+Named after [Sancho Panza](https://en.wikipedia.org/wiki/Sancho_Panza), Don Quixote's squire. Quixote was the dreamer, forever charging at windmills; Sancho was the practical one — grounded, plain-spoken, the companion who turned his master's grand schemes into words that worked in the real world. That's the job here. Your coding agent is the knight errant, and Sancho is the faithful squire carrying your voice to it: plainly, reliably, both feet on the ground.
+
 ## Install
 
 **Windows** (PowerShell):
@@ -63,6 +67,8 @@ sancho --help
 ```
 
 Agents: `claude` (default), `cursor`, `hermes`, `codex`. The first run of each model size downloads it, so give it a minute.
+
+> **Note:** `--meeting` is Windows-only for now — there's no macOS or Linux support yet. If you'd like to build that, I'd be very happy to have it.
 
 ## Transcription
 

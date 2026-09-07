@@ -18,14 +18,19 @@ RELEASE_BASE="https://github.com/$REPO_OWNER/$REPO_NAME/releases/latest/download
 # ---- Elevate with sudo if needed -------------------------------------------
 if [ "$(id -u)" -ne 0 ]; then
     echo "Requesting administrator privileges..."
+    # Keep the invoking user's PATH across sudo — dotnet/ffmpeg often live in
+    # user-local places (~/.dotnet, ~/.local/bin, Homebrew) that sudo's default
+    # environment drops. System dirs come first so commands run as root still
+    # resolve to system binaries.
+    user_path="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
     if [ -f "$0" ]; then
         # Invoked as a file - re-exec directly.
-        exec sudo bash "$0"
+        exec sudo env "$user_path" bash "$0"
     else
         # Piped via "curl | bash" - fetch a copy to a temp file first.
         tmp="$(mktemp "${TMPDIR:-/tmp}/sancho-install.XXXXXX")"
         curl -fsSL "$RAW_BASE/scripts/install.sh" -o "$tmp"
-        exec sudo bash "$tmp"
+        exec sudo env "$user_path" bash "$tmp"
     fi
 fi
 
@@ -43,9 +48,20 @@ case "$(uname -m)" in
 esac
 
 # ---- Install the .NET SDK if missing ----------------------------------------
-if ! command -v dotnet >/dev/null 2>&1; then
-    echo "dotnet not found - installing the .NET 10 SDK..."
-    install_dir="/usr/local/share/dotnet"
+# Probe by running dotnet and checking the version, not by PATH lookup alone:
+# a broken stub or a non-10.x install would pass an existence check.
+if ! dotnet --version 2>/dev/null | grep -qE '^10\.'; then
+    echo "dotnet 10 not available - installing the .NET 10 SDK..."
+    # The install dir must be on the framework-dependent apphost's default
+    # probe path, which differs per platform: /usr/share/dotnet on Linux,
+    # /usr/local/share/dotnet on macOS. Anywhere else and `sancho` reports
+    # "You must install .NET to run this application" despite the SDK being
+    # present (only DOTNET_ROOT would make it visible).
+    if [ "$os" = "linux" ]; then
+        install_dir="/usr/share/dotnet"
+    else
+        install_dir="/usr/local/share/dotnet"
+    fi
     installer="$(mktemp "${TMPDIR:-/tmp}/dotnet-install.XXXXXX")"
     curl -fsSL "https://dot.net/v1/dotnet-install.sh" -o "$installer"
     bash "$installer" --channel 10.0 --install-dir "$install_dir"
@@ -55,7 +71,7 @@ fi
 echo "dotnet: $(dotnet --version)"
 
 # ---- Ensure ffmpeg is available (mic capture on all platforms) --------------
-if ! command -v ffmpeg >/dev/null 2>&1; then
+if ! ffmpeg -version >/dev/null 2>&1; then
     echo "ffmpeg not found - installing..."
     if [ "$os" = "linux" ]; then
         if command -v apt-get >/dev/null 2>&1; then
@@ -82,7 +98,7 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
         fi
     fi
 fi
-echo "ffmpeg: $(command -v ffmpeg)"
+echo "ffmpeg: $(ffmpeg -version 2>/dev/null | head -n1)"
 
 # ---- Download the published executable --------------------------------------
 echo "Downloading sancho ($os-$arch)..."

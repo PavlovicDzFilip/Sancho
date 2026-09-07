@@ -53,8 +53,19 @@ if (-not (Test-Admin)) {
 }
 
 # ---- Install the .NET SDK if missing --------------------------------------
-if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
-    Write-Host "dotnet not found - installing the .NET 10 SDK..." -ForegroundColor Yellow
+# Probe by running dotnet and checking the version, not by PATH lookup alone:
+# a broken stub or a non-10.x install would pass an existence check.
+function Test-Dotnet10 {
+    try {
+        $v = dotnet --version 2>$null
+        return $null -ne $v -and $v.Trim() -match '^10\.'
+    } catch {
+        return $false
+    }
+}
+
+if (-not (Test-Dotnet10)) {
+    Write-Host "dotnet 10 not available - installing the .NET 10 SDK..." -ForegroundColor Yellow
 
     $ok = $false
     if (Get-Command winget -ErrorAction SilentlyContinue) {
@@ -81,8 +92,8 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     # Pick up the freshly installed dotnet in this session.
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                 [Environment]::GetEnvironmentVariable("Path", "User")
-    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
-        throw ".NET SDK installation reported success, but dotnet is still not on PATH."
+    if (-not (Test-Dotnet10)) {
+        throw ".NET SDK installation reported success, but a working dotnet 10 is still not on PATH."
     }
 } else {
     Write-Host "dotnet already installed: $((dotnet --version).Trim())"

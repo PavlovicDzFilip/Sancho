@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using SherpaOnnx;
@@ -283,7 +284,7 @@ public sealed class LocalTranscriptionService(
             hadSpeech = false;
 
             var text = transcript.Trim();
-            if (!string.IsNullOrWhiteSpace(text))
+            if (!string.IsNullOrWhiteSpace(text) && !IsNoiseTranscript(text))
                 events.TryWrite(new TranscriptionEvent.Completed(text, isMic));
         }
     }
@@ -366,6 +367,19 @@ public sealed class LocalTranscriptionService(
         return result.ToString().Trim();
     }
 
+    /// <summary>
+    /// True when whisper hallucinated on non-speech audio instead of returning
+    /// empty text: caption tags from its training data ("[BLANK_AUDIO]",
+    /// "[SILENCE]", "[MUSIC]") or punctuation-only output (".", "…", "♪").
+    /// These are noise, not user speech, and must not reach the agent.
+    /// </summary>
+    internal static bool IsNoiseTranscript(string text)
+    {
+        if (text.All(c => char.IsWhiteSpace(c) || char.IsPunctuation(c) || char.IsSymbol(c)))
+            return true;
+        return Regex.IsMatch(text, @"^\s*((\[[^\]]+\]|\([^)]+\))\s*)+$");
+    }
+
     /// <summary>Decodes one whisper-sized window of 16 kHz samples.</summary>
     internal static string DecodeWindow(OfflineRecognizer recognizer, float[] window)
     {
@@ -380,7 +394,11 @@ public sealed class LocalTranscriptionService(
     {
         var config = new VadModelConfig();
         config.SileroVad.Model = Path.Combine(modelDir, LocalSttModels.SileroVadFileName);
-        config.SileroVad.Threshold = 0.5f;
+        // Slightly above silero's 0.5 default: opening a segment needs more
+        // speech confidence, so keyboard clacks and room noise stop triggering
+        // decodes that whisper answers with "[BLANK_AUDIO]" / "[SILENCE]"
+        // hallucinations. Quiet speech still registers.
+        config.SileroVad.Threshold = 0.6f;
         // 1.5 s of silence closes a segment: with 0.5 s every mid-sentence
         // pause split the utterance, and whisper hallucinated on the short
         // leftover chunks ("half-baked sentences" to Claude). The longer

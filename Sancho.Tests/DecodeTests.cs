@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
@@ -23,9 +24,6 @@ public class DecodeTests
     [Fact]
     public async Task FixtureSentence_TranscribesKnownPhrase()
     {
-        if (!OperatingSystem.IsWindows())
-            Assert.Skip("Fixture conversion uses NAudio's Media Foundation reader (Windows).");
-
         var fixturesDir = Path.Combine(AppContext.BaseDirectory, "fixtures");
         var fixture = Directory.Exists(fixturesDir)
             ? Directory.GetFiles(fixturesDir)
@@ -70,8 +68,16 @@ public class DecodeTests
         await Task.CompletedTask;
     }
 
-    /// <summary>Converts any Media Foundation-readable audio file (wav, m4a, mp3, ...) to 24 kHz mono PCM16.</summary>
-    private static byte[] LoadAs24kMonoPcm16(string path)
+    /// <summary>
+    /// Converts any ffmpeg- or Media Foundation-readable audio file (wav, m4a,
+    /// mp3, ...) to 24 kHz mono PCM16. Windows uses NAudio's Media Foundation
+    /// reader (NAudio is guaranteed there, ffmpeg is not); Linux/macOS use
+    /// ffmpeg — the app's own conversion path, and a runtime dependency there.
+    /// </summary>
+    private static byte[] LoadAs24kMonoPcm16(string path) =>
+        OperatingSystem.IsWindows() ? LoadWithMediaFoundation(path) : LoadWithFfmpeg(path);
+
+    private static byte[] LoadWithMediaFoundation(string path)
     {
         using var audio = new MediaFoundationReader(path);
         var channels = audio.WaveFormat.Channels;
@@ -101,5 +107,54 @@ public class DecodeTests
         }
 
         return pcm;
+    }
+
+    /// <summary>Converts the fixture with ffmpeg, downmixing and resampling to 24 kHz mono PCM16.</summary>
+    private static byte[] LoadWithFfmpeg(string path)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "ffmpeg",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        psi.ArgumentList.Add("-hide_banner");
+        psi.ArgumentList.Add("-loglevel");
+        psi.ArgumentList.Add("error");
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(path);
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("s16le");
+        psi.ArgumentList.Add("-ar");
+        psi.ArgumentList.Add("24000");
+        psi.ArgumentList.Add("-ac");
+        psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add("pipe:1");
+
+        try
+        {
+            using var process = Process.Start(psi);
+            if (process is null)
+                throw new InvalidOperationException("ffmpeg could not be started.");
+
+            using var pcm = new MemoryStream();
+            process.StandardOutput.BaseStream.CopyTo(pcm);
+            process.WaitForExit();
+
+            if (process.ExitCode != 0)
+            {
+                var stderr = process.StandardError.ReadToEnd().Trim();
+                throw new InvalidOperationException(
+                    $"ffmpeg failed to decode {Path.GetFileName(path)}: {stderr}");
+            }
+
+            return pcm.ToArray();
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            throw new InvalidOperationException(
+                "ffmpeg not found — sancho requires it for audio capture on this platform.");
+        }
     }
 }

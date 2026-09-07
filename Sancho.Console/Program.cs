@@ -96,6 +96,67 @@ static string? ChooseSession(IReadOnlyList<AgentService.SessionSummary> sessions
 }
 
 /// <summary>
+/// Resolves which agent CLI to use, with precedence
+/// <c>--agent</c> flag &gt; config file &gt; first-run PATH discovery.
+/// Discovery: exactly one installed CLI is picked and persisted to the
+/// config; several prompt the user with a selector (like the microphone
+/// picker); none fails with install hints. Notes mode needs no agent, so
+/// discovery is skipped there entirely. Returns <c>null</c> on fatal failure.
+/// </summary>
+static string? ResolveAgent(CliArgs cliArgs, SanchoConfig stored)
+{
+    var explicitName = (cliArgs.Agent ?? stored.Agent)?.ToLowerInvariant();
+    if (explicitName is not null)
+    {
+        if (explicitName is not ("claude" or "cursor" or "hermes" or "codex"))
+        {
+            AnsiConsole.MarkupLine($"[red]Agent '{explicitName}' is not supported yet. Use 'claude', 'cursor', 'hermes' or 'codex'.[/]");
+            return null;
+        }
+        return explicitName;
+    }
+
+    if (cliArgs.Notes)
+        return null; // notes mode never involves an agent
+
+    var available = AgentDetector.Supported
+        .Where(a => AgentDetector.IsOnPath(a.Executable))
+        .ToList();
+
+    switch (available.Count)
+    {
+        case 0:
+            AnsiConsole.MarkupLine("[red]No agent CLI found on your PATH. Install one, then run Sancho again:[/]");
+            foreach (var a in AgentDetector.Supported)
+                AnsiConsole.MarkupLine($"  [grey]{a.Name,-8}{Markup.Escape(a.InstallHint)}[/]");
+            return null;
+
+        case 1:
+        {
+            var only = available[0];
+            ConfigStore.Save(stored with { Agent = only.Name });
+            AnsiConsole.MarkupLine(
+                $"[grey]No agent configured — found {only.Name}; using it. " +
+                "Change it with 'sancho config set agent <name>'.[/]");
+            return only.Name;
+        }
+
+        default:
+        {
+            var chosen = AnsiConsole.Prompt(
+                new SelectionPrompt<(string Name, string Executable, string InstallHint)>()
+                    .Title("Multiple agents found — choose the one to use")
+                    .UseConverter(a => $"{a.Name}  ({Markup.Escape(a.InstallHint)})")
+                    .AddChoices(available));
+            ConfigStore.Save(stored with { Agent = chosen.Name });
+            AnsiConsole.MarkupLine(
+                $"[grey]Saved 'agent: {chosen.Name}' — change it with 'sancho config set agent <name>'.[/]");
+            return chosen.Name;
+        }
+    }
+}
+
+/// <summary>
 /// Creates the agent backend. The factory guarantees a usable executable:
 /// not installed or not logged in fails here, before the orchestrator starts.
 /// </summary>
@@ -159,14 +220,13 @@ async Task<int> Run(LogFileWriter? logFile)
     // ── Resolve configuration (defaults < ~/.sancho/config.json < flags) ──
     var stored = ConfigStore.Load();
 
-    // The agent backend: config key or --agent flag; claude is the default.
-    // More agents (cursor, codex, hermes) land behind the same seam later.
-    var agentName = (cliArgs.Agent ?? stored.Agent ?? "claude").ToLowerInvariant();
-    if (agentName is not ("claude" or "cursor" or "hermes" or "codex"))
-    {
-        AnsiConsole.MarkupLine($"[red]Agent '{agentName}' is not supported yet. Use 'claude', 'cursor', 'hermes' or 'codex'.[/]");
+    // The agent backend: config key or --agent flag. When neither is set,
+    // first-run discovery probes the PATH (see ResolveAgent below) — claude
+    // is no longer silently assumed. Null here is fatal, except in notes
+    // mode, which never involves an agent.
+    var agentName = ResolveAgent(cliArgs, stored);
+    if (agentName is null && !cliArgs.Notes)
         return 2;
-    }
 
     // The whisper model size: config key or --model flag; small is the default.
     var modelName = (cliArgs.Model ?? stored.Model ?? WhisperModels.DefaultSize).ToLowerInvariant();
@@ -258,12 +318,14 @@ async Task<int> Run(LogFileWriter? logFile)
     }
     else
     {
+        // agentName is non-null here: ResolveAgent returned null and !Notes
+        // returned from Run above.
         var resumeSessionId = cliArgs.Continue
-            ? ChooseSession(ListAgentSessions(agentName, targetDir))
+            ? ChooseSession(ListAgentSessions(agentName!, targetDir))
             : null;
 
         services.AddSingleton<AgentService>(sp =>
-            CreateAgent(agentName, resumeSessionId, sp));
+            CreateAgent(agentName!, resumeSessionId, sp));
         services.AddSingleton<Orchestrator>();
     }
 

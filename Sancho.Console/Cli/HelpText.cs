@@ -20,7 +20,8 @@ public static class HelpText
           sancho config set <key> <value> Persist one config key
 
         Options:
-          --agent <name>                   Agent backend: claude (default), cursor, hermes or codex
+          --agent <name>                   Agent backend: claude, cursor, hermes or codex
+                                           (auto-detected from your PATH when not configured)
           --model <size>                   Whisper model size: tiny, base, small (default) or medium
           --meeting                        Transcribe your mic + the system output (other meeting
                                            participants) — lines labeled Me/Others; Windows only
@@ -45,7 +46,7 @@ public static class HelpText
 
         Config:
           File:  ~/.sancho/config.json    (SANCHO_CONFIG_DIR overrides the directory)
-          Keys:  agent                    (claude | cursor | hermes | codex)
+          Keys:  agent                    (claude | cursor | hermes | codex; auto-detected when unset)
                  model                    (tiny | base | small | medium)
         """;
 }

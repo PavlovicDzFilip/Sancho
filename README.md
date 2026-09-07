@@ -2,7 +2,7 @@
 
 **Talk to your coding agent.** Sancho listens to your microphone, transcribes your speech entirely on-device, and hands your words to a coding agent as if you'd typed them — no typing, no cloud round-trip for speech.
 
-Speech-to-text runs fully locally (sherpa-onnx whisper + silero VAD), so your voice never leaves the machine and there's no API key or subscription for transcription. The agent it talks to (Claude Code by default) is the same CLI you'd type into — Sancho just replaces the keyboard.
+Speech-to-text runs fully locally (sherpa-onnx whisper + silero VAD), so your voice never leaves the machine and there's no API key or subscription for transcription. The agent it talks to (Claude Code, Cursor, Hermes, or Codex — whichever you have installed) is the same CLI you'd type into — Sancho just replaces the keyboard.
 
 ## What can you use it for?
 
@@ -66,7 +66,7 @@ sancho --model base  # smaller/faster transcription model for this run
 sancho --help
 ```
 
-Agents: `claude` (default), `cursor`, `hermes`, `codex`. The first run of each model size downloads it, so give it a minute.
+Agents: `claude`, `cursor`, `hermes`, `codex` — on a fresh install Sancho auto-detects whichever are on your PATH (picking one automatically, or asking if there are several) and saves your choice to the config. The first run of each model size downloads it, so give it a minute.
 
 > **Note:** `--meeting` is Windows-only for now — there's no macOS or Linux support yet. If you'd like to build that, I'd be very happy to have it.
 
@@ -88,7 +88,7 @@ sancho config set model small
 sancho config set agent claude
 ```
 
-Config keys: `agent` (claude | cursor | hermes | codex), `model` (tiny | base | small | medium). Precedence: defaults < config file < flags.
+Config keys: `agent` (claude | cursor | hermes | codex; auto-detected from your PATH when unset), `model` (tiny | base | small | medium). Precedence: defaults < config file < flags.
 
 The system prompt is read from `.sancho.md` in the directory you run Sancho from. If the file is missing, Sancho creates it with a default prompt and tells you — edit it to customize how the agent behaves on your project.
 

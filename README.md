@@ -103,3 +103,7 @@ Requires the .NET 10 SDK.
 - `scripts/publish.ps1` (Windows) / `scripts/publish.sh` (macOS/Linux) build all platforms: `win-x64`, `linux-x64`, `linux-arm64`, `osx-arm64`, `osx-x64`.
 - Output: `artifacts/publish/<platform>/`, with release-ready assets staged in `artifacts/release/`.
 - To release: create a GitHub release and attach everything from `artifacts/release/` (`sancho.exe`, `sancho-linux-x64`, `sancho-osx-arm64`, …). The installers download from `releases/latest/download`.
+
+---
+
+*psst: `git log -S sk-proj --all` — every good project has a story under the floorboards.*

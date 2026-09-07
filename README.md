@@ -22,6 +22,10 @@ mic → on-device whisper transcription → your agent CLI
 - The agent's system prompt comes from `.sancho.md` in that directory — created with a sensible default on first run, edit it to steer the agent for your project.
 - Sessions persist per agent, so `sancho --continue` picks up where you left off.
 
+## How it was built
+
+Sancho is a vibe-coded project, built with [Claude Code](https://claude.com/claude-code) — features were talked through rather than specced, and not much time went into designing exactly how it all fits together. There's a reasonable separation of concerns (audio capture, transcription, agent integration each live in their own place), but it wasn't whiteboarded first. The code quality is okay — not perfect, but good enough for what the tool does — and it's honest about being that. If a bit of it looks like it grew organically: it did.
+
 ## Install
 
 **Windows** (PowerShell):

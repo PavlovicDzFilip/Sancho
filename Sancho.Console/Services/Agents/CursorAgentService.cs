@@ -29,7 +29,7 @@ public sealed class CursorAgentService : AgentService
 
     public CursorAgentService(string? resumeSessionId, ILogger<CursorAgentService> logger, AgentLaunchOptions? launchOptions = null)
     {
-        _targetDirectory = Directory.GetCurrentDirectory();
+        _targetDirectory = Path.GetFullPath((launchOptions ?? new AgentLaunchOptions()).WorkingDirectory);
         _resumeSessionId = resumeSessionId;
         _sessionId = resumeSessionId;
         _logger = logger;
@@ -116,7 +116,39 @@ public sealed class CursorAgentService : AgentService
     }
 
     /// <inheritdoc />
-    public override void VerifyAvailable() => VerifyAvailable(Executable);
+    public override void VerifyAvailable() => VerifyAvailable(ResolveExecutable());
+
+    private static string ResolveExecutable()
+    {
+        // Retain the unambiguous legacy name when installed. The modern CLI
+        // is named agent; verify its identity before launching a generic name.
+        var extensions = OperatingSystem.IsWindows() ? new[] { ".exe", ".cmd", ".bat", "" } : new[] { "" };
+        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+            foreach (var extension in extensions)
+            {
+                var path = Path.Combine(directory.Trim('"'), Executable + extension);
+                if (File.Exists(path)) return path;
+            }
+        try
+        {
+            var psi = new ProcessStartInfo("agent", "--help")
+            {
+                RedirectStandardOutput = true, RedirectStandardError = true,
+                UseShellExecute = false, CreateNoWindow = true
+            };
+            using var process = Process.Start(psi);
+            if (process is not null)
+            {
+                var stdout = process.StandardOutput.ReadToEndAsync();
+                var stderr = process.StandardError.ReadToEndAsync();
+                if (!process.WaitForExit(5000)) { process.Kill(entireProcessTree: true); process.WaitForExit(); }
+                var help = stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult();
+                if (process.ExitCode == 0 && help.Contains("Cursor", StringComparison.OrdinalIgnoreCase)) return "agent";
+            }
+        }
+        catch (System.ComponentModel.Win32Exception) { }
+        throw new InvalidOperationException("Could not find Cursor's CLI (`cursor-agent` or Cursor's `agent`). Install it from cursor.com and try again.");
+    }
 
     /// <summary>Checks cursor-agent is installed (auth failures surface on the first turn).</summary>
     public static void VerifyAvailable(string executable = Executable)
@@ -131,9 +163,20 @@ public sealed class CursorAgentService : AgentService
                 CreateNoWindow = true
             };
             using var proc = Process.Start(psi);
-            if (proc is null || !proc.WaitForExit(5_000) || proc.ExitCode != 0)
+            if (proc is null)
                 throw new InvalidOperationException(
                     "cursor-agent is not installed. Install it from cursor.com and try again.");
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+            if (!proc.WaitForExit(5_000))
+            {
+                proc.Kill(entireProcessTree: true);
+                proc.WaitForExit();
+                throw new InvalidOperationException("Cursor CLI did not respond to --version.");
+            }
+            stdout.GetAwaiter().GetResult();
+            stderr.GetAwaiter().GetResult();
+            if (proc.ExitCode != 0) throw new InvalidOperationException("Cursor CLI failed its --version check.");
         }
         catch (InvalidOperationException)
         {
@@ -162,6 +205,7 @@ public sealed class CursorAgentService : AgentService
                 turnActive = true;
                 writer.TryWrite(AgentEvent.TurnStart.Instance);
                 await RunTurnAsync(writer, sentence, ct);
+                writer.TryWrite(AgentEvent.TurnComplete.Instance);
                 turnActive = false;
                 Interlocked.Exchange(ref _ready, 1);
                 writer.TryWrite(AgentEvent.Ready.Instance);
@@ -186,9 +230,19 @@ public sealed class CursorAgentService : AgentService
 
     private async Task RunTurnAsync(ChannelWriter<AgentEvent> writer, string sentence, CancellationToken ct)
     {
-        var psi = _launchOptions.CreateStartInfo(Executable, []);
+        var psi = _launchOptions.CreateStartInfo(_launchOptions.Executable is null ? ResolveExecutable() : Executable, []);
         psi.ArgumentList.Add("-p");
-        psi.ArgumentList.Add(sentence);
+        // Cursor has no documented append-system-prompt option. Keep its native
+        // guidance and supply Sancho's instructions in the user prompt instead.
+        var instructions = _launchOptions.ReadInstructions();
+        psi.ArgumentList.Add(string.IsNullOrWhiteSpace(instructions)
+            ? "Spoken user request:\n" + sentence
+            : "<sancho_instructions>\n" + instructions + "\n</sancho_instructions>\nSpoken user request:\n" + sentence);
+        psi.ArgumentList.Add("--force");
+        psi.ArgumentList.Add("--trust");
+        psi.ArgumentList.Add("--approve-mcps");
+        psi.ArgumentList.Add("--sandbox");
+        psi.ArgumentList.Add("disabled");
         psi.ArgumentList.Add("--output-format");
         psi.ArgumentList.Add("stream-json");
         if (_sessionId is not null)
@@ -205,6 +259,7 @@ public sealed class CursorAgentService : AgentService
         // stderr is drained concurrently so a chatty process can't deadlock
         // on a full pipe buffer.
         var stderrTask = ReadStderrAsync(process, writer, ct);
+        var state = new TurnState();
         try
         {
 
@@ -218,7 +273,7 @@ public sealed class CursorAgentService : AgentService
                     try
                     {
                         using var doc = JsonDocument.Parse(line);
-                        HandleEvent(doc.RootElement, writer);
+                        HandleEvent(doc.RootElement, writer, state);
                     }
                     catch (JsonException)
                     {
@@ -231,6 +286,8 @@ public sealed class CursorAgentService : AgentService
 
                 if (process.ExitCode != 0 && !ct.IsCancellationRequested)
                     writer.TryWrite(new AgentEvent.Error($"{Executable} exited with code {process.ExitCode}"));
+                else if (!state.Terminal && !ct.IsCancellationRequested)
+                    writer.TryWrite(new AgentEvent.Error("Cursor ended without a terminal result."));
         }
         finally
         {
@@ -258,26 +315,38 @@ public sealed class CursorAgentService : AgentService
         }
     }
 
-    private void HandleEvent(JsonElement root, ChannelWriter<AgentEvent> writer)
+    private sealed class TurnState
     {
-        var type = root.TryGetProperty("type", out var tp) ? tp.GetString() : null;
+        public bool Terminal;
+        public bool HasAssistantText;
+    }
+
+    private void HandleEvent(JsonElement root, ChannelWriter<AgentEvent> writer, TurnState state)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return;
+        var type = String(root, "type");
+        if (String(root, "session_id") is { Length: > 0 } eventSessionId)
+        {
+            if (_sessionId is not null && _sessionId != eventSessionId)
+                throw new InvalidOperationException("Cursor returned a different session ID; refusing to switch conversations.");
+            _sessionId = eventSessionId;
+        }
 
         switch (type)
         {
             case "system":
-                // init carries the session id — capture it for the next
-                // turn's --resume so the conversation stays one session.
-                if (_sessionId is null
-                    && root.TryGetProperty("session_id", out var sid)
-                    && sid.GetString() is { Length: > 0 } id)
-                {
-                    _sessionId = id;
-                }
-
                 break;
 
             case "assistant":
-                EmitAssistantText(root, writer);
+                if (root.TryGetProperty("message", out var message))
+                {
+                    var text = SessionJson.ExtractText(message);
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        state.HasAssistantText = true;
+                        writer.TryWrite(new AgentEvent.AssistantText(text));
+                    }
+                }
                 break;
 
             case "tool_call":
@@ -285,58 +354,78 @@ public sealed class CursorAgentService : AgentService
                 break;
 
             case "result":
-                writer.TryWrite(AgentEvent.TurnComplete.Instance);
+                state.Terminal = true;
+                if (IsError(root) || String(root, "subtype") is { } subtype && subtype != "success")
+                    writer.TryWrite(new AgentEvent.Error(String(root, "result") ?? String(root, "error") ?? "Cursor turn failed."));
+                else if (!state.HasAssistantText && String(root, "result") is { Length: > 0 } result)
+                {
+                    state.HasAssistantText = true;
+                    writer.TryWrite(new AgentEvent.AssistantText(result));
+                }
+                break;
+            case "error":
+                writer.TryWrite(new AgentEvent.Error(String(root, "message") ?? String(root, "error") ?? "Cursor reported an error."));
                 break;
         }
-    }
-
-    private static void EmitAssistantText(JsonElement root, ChannelWriter<AgentEvent> writer)
-    {
-        if (!root.TryGetProperty("message", out var message))
-            return;
-
-        var text = SessionJson.ExtractText(message);
-        if (!string.IsNullOrWhiteSpace(text))
-            writer.TryWrite(new AgentEvent.AssistantText(text));
     }
 
     /// <summary>Cursor reports tools as <c>tool_call</c> events (started/completed).</summary>
     private static void EmitToolCall(JsonElement root, ChannelWriter<AgentEvent> writer)
     {
         var subtype = root.TryGetProperty("subtype", out var sub) ? sub.GetString() : null;
-        if (subtype != "started")
+        if (subtype is not ("started" or "completed"))
             return;
 
         var name = "tool";
+        JsonElement detail = default;
         if (root.TryGetProperty("tool_call", out var tc) && tc.ValueKind == JsonValueKind.Object)
         {
             foreach (var prop in tc.EnumerateObject())
             {
                 name = prop.Name;
+                detail = prop.Value;
+                if (name == "function") name = String(detail, "name") ?? name;
                 break;
             }
         }
 
-        writer.TryWrite(new AgentEvent.ToolUse(name, name));
+        if (subtype == "started")
+            writer.TryWrite(new AgentEvent.ToolUse(name,
+                detail.ValueKind == JsonValueKind.Object && detail.TryGetProperty("args", out var args)
+                    ? args.GetRawText() : String(detail, "arguments") ?? name));
+        else
+        {
+            var failed = IsError(root) || IsError(detail);
+            if (detail.ValueKind == JsonValueKind.Object && detail.TryGetProperty("result", out var result))
+            {
+                failed |= IsError(result);
+                if (failed) writer.TryWrite(new AgentEvent.Status(result.GetRawText(), AgentStatusKind.Info));
+            }
+            writer.TryWrite(new AgentEvent.ToolResult(String(root, "call_id") ?? name, failed));
+        }
     }
+
+    private static string? String(JsonElement root, string property) =>
+        root.ValueKind == JsonValueKind.Object && root.TryGetProperty(property, out var value)
+            && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+    private static bool IsError(JsonElement root) => root.ValueKind == JsonValueKind.Object &&
+        ((root.TryGetProperty("is_error", out var flag) && flag.ValueKind == JsonValueKind.True)
+        || (root.TryGetProperty("success", out var success) && success.ValueKind == JsonValueKind.False)
+        || (root.TryGetProperty("error", out var error) && error.ValueKind is not (JsonValueKind.Null or JsonValueKind.False))
+        || (root.TryGetProperty("failure", out var failure) && failure.ValueKind is not (JsonValueKind.Null or JsonValueKind.False)));
 
     private string? ResolveSessionFile()
     {
-        var dir = Path.Combine(DefaultSessionRoot(), "projects",
-            SessionJson.EncodeProjectDirectory(_targetDirectory), "agent-transcripts");
-        if (!Directory.Exists(dir))
-            return null;
+        return ResolveSessionFile(DefaultSessionRoot(), _targetDirectory, _sessionId);
+    }
 
-        if (_resumeSessionId is { } id)
-        {
-            var path = Path.Combine(dir, id, id + ".jsonl");
-            return File.Exists(path) ? path : null;
-        }
-
-        return Directory.GetDirectories(dir)
-            .Select(d => Path.Combine(d, Path.GetFileName(d) + ".jsonl"))
-            .Where(File.Exists)
-            .OrderByDescending(File.GetLastWriteTimeUtc)
-            .FirstOrDefault();
+    internal static string? ResolveSessionFile(string sessionRoot, string targetDirectory, string? sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return null;
+        var dir = Path.Combine(sessionRoot, "projects",
+            SessionJson.EncodeProjectDirectory(targetDirectory), "agent-transcripts");
+        var path = Path.Combine(dir, sessionId, sessionId + ".jsonl");
+        return File.Exists(path) ? path : null;
     }
 }

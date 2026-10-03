@@ -89,7 +89,7 @@ static string? ChooseSession(IReadOnlyList<AgentService.SessionSummary> sessions
             .Title("Choose a session to continue")
             .UseConverter(s => s.Id.Length == 0
                 ? s.Preview
-                : $"{s.LastActivity:yyyy-MM-dd HH:mm}  {Markup.Escape(s.Title ?? s.Preview)}")
+                : $"{(s.LastActivity == DateTime.MinValue ? "unknown time" : s.LastActivity.ToString("yyyy-MM-dd HH:mm"))}  {Markup.Escape(s.Title ?? s.Preview)}")
             .AddChoices(choices));
 
     return chosen.Id.Length == 0 ? null : chosen.Id;
@@ -141,8 +141,8 @@ static AgentService CreateCodexAgent(string? resumeSessionId, IServiceProvider s
 static IReadOnlyList<AgentService.SessionSummary> ListAgentSessions(string agentName, string targetDirectory) => agentName switch
 {
     "cursor" => CursorAgentService.ListSessions(CursorAgentService.DefaultSessionRoot(), targetDirectory),
-    "hermes" => HermesAgentService.ListSessions(),
-    "codex" => CodexAgentService.ListAllSessions(CodexAgentService.DefaultSessionRoot()),
+    "hermes" => new HermesAgentService(null, Microsoft.Extensions.Logging.Abstractions.NullLogger<HermesAgentService>.Instance).ListSessions(targetDirectory),
+    "codex" => CodexAgentService.ListAllSessions(CodexAgentService.DefaultSessionRoot(), targetDirectory),
     _ => ClaudeCodeAgentService.ListSessions(ClaudeCodeAgentService.DefaultSessionRoot(), targetDirectory),
 };
 
@@ -160,7 +160,7 @@ async Task<int> Run(LogFileWriter? logFile)
     var stored = ConfigStore.Load();
 
     // The agent backend: config key or --agent flag; claude is the default.
-    // More agents (cursor, codex, hermes) land behind the same seam later.
+    // Every backend shares the same voice flow.
     var agentName = (cliArgs.Agent ?? stored.Agent ?? "claude").ToLowerInvariant();
     if (agentName is not ("claude" or "cursor" or "hermes" or "codex"))
     {
@@ -245,8 +245,8 @@ async Task<int> Run(LogFileWriter? logFile)
 
     if (cliArgs.Notes)
     {
-        // Notes mode never involves Claude — no CLI check, no session, no
-        // .sancho.md side effects. The orchestrator gets a null ClaudeService.
+        // Notes mode never involves an assistant — no CLI check, no session, no
+        // .sancho.md side effects. The orchestrator gets a null AgentService.
         services.AddSingleton<Orchestrator>(sp => new Orchestrator(
             sp.GetRequiredService<AudioSourceFactory>(),
             sp.GetRequiredService<LocalTranscriptionService>(),

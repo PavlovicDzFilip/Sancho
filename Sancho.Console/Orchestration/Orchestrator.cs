@@ -34,9 +34,7 @@ public sealed class Orchestrator(
 
     private StreamWriter? _notes;
 
-    private readonly object _bufferLock = new();
-    private readonly List<string> _buffer = new();
-    private bool _agentIsReady;
+    private readonly AgentInputQueue _inputQueue = new();
     private string? _currentDelta;
 
     // The status bar shows the transcription state plus a live mic suffix;
@@ -90,7 +88,7 @@ public sealed class Orchestrator(
                 $"sancho-notes-{DateTime.Now:yyyy-MM-dd}.md");
             _notes = new StreamWriter(notesPath, append: true, Encoding.UTF8) { AutoFlush = true };
             display.History.AppendLine(
-                $"📝 Transcribing to {Path.GetFileName(notesPath)} — Claude is not involved.");
+                $"📝 Transcribing to {Path.GetFileName(notesPath)} — the assistant is not involved.");
             display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
         }
         else
@@ -129,7 +127,7 @@ public sealed class Orchestrator(
             ? null
             : loopback.CaptureAsync(loopbackChannel!.Writer, captureCts.Token);
         var agentEvents = agentService?.RunAsync(cts.Token);
-        var agentTask = agentEvents is null ? null : ConsumeAgentEventsAsync(agentEvents, cts.Token);
+        var agentTask = agentEvents is null ? null : ConsumeAgentEventsAsync(agentEvents, cts);
         var transcribeTask = MeetingMode
             ? RunMeetingTranscriptionLoopAsync(
                 channel.Reader.ReadAllAsync(cts.Token),
@@ -152,7 +150,7 @@ public sealed class Orchestrator(
         {
             // Windows delivers Ctrl+C as a ReadKey keystroke; Unix delivers it
             // as SIGINT (CancelKeyPress). Either path cancels the run.
-            var keyTask = Task.Run(() =>
+            var keyTask = Task.Run(async () =>
             {
                 try
                 {
@@ -166,6 +164,8 @@ public sealed class Orchestrator(
                 catch (InvalidOperationException)
                 {
                     // stdin is redirected (no console) — only SIGINT can end the run now.
+                    try { await Task.Delay(Timeout.Infinite, cts.Token); }
+                    catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
                 }
             });
 
@@ -173,19 +173,21 @@ public sealed class Orchestrator(
             await Task.WhenAny(keyTask, cancelTask);
 
             await cts.CancelAsync();
-            await Task.WhenAll(captureTask, transcribeTask, micTask);
-            if (loopbackTask is not null)
-                await loopbackTask;
-            if (agentTask is not null)
-                await agentTask;
+            var shutdownTasks = new List<Task> { captureTask, transcribeTask, micTask };
+            if (loopbackTask is not null) shutdownTasks.Add(loopbackTask);
+            if (agentTask is not null) shutdownTasks.Add(agentTask);
+            await Task.WhenAll(shutdownTasks);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
         }
         finally
         {
             System.Console.CancelKeyPress -= OnCancelKeyPress;
+            (loopback as IDisposable)?.Dispose();
+            _notes?.Dispose();
         }
 
-        (loopback as IDisposable)?.Dispose();
-        _notes?.Dispose();
         display.History.AppendLine("✅ Done.");
     }
 
@@ -212,8 +214,9 @@ public sealed class Orchestrator(
     // ── Agent event consumer ───────────────────────────────────────
 
     private async Task ConsumeAgentEventsAsync(
-        IAsyncEnumerable<AgentEvent> events, CancellationToken ct)
+        IAsyncEnumerable<AgentEvent> events, CancellationTokenSource lifetime)
     {
+        var ct = lifetime.Token;
         try
         {
             await foreach (var evt in events.WithCancellation(ct))
@@ -221,8 +224,7 @@ public sealed class Orchestrator(
                 switch (evt)
                 {
                     case AgentEvent.Ready:
-                        lock (_bufferLock)
-                            _agentIsReady = true;
+                        _inputQueue.MarkReady();
                         TryFlushBuffer();
                         break;
 
@@ -266,8 +268,18 @@ public sealed class Orchestrator(
                 }
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+        }
+        finally
+        {
+            _inputQueue.Stop();
+            if (!ct.IsCancellationRequested)
+            {
+                display.History.AppendLine("🛑 Assistant stopped — restart Sancho to resume.", Display.HistoryColor.Error);
+                UpdateTranscript();
+                lifetime.Cancel();
+            }
         }
     }
 
@@ -318,8 +330,7 @@ public sealed class Orchestrator(
                             AppendNote(sentence);
                         else
                         {
-                            lock (_bufferLock)
-                                _buffer.Add(sentence);
+                            _inputQueue.Add(sentence);
                             TryFlushBuffer();
                         }
                     }
@@ -473,11 +484,7 @@ public sealed class Orchestrator(
 
     private void UpdateTranscript()
     {
-        // Snapshot _buffer under lock to avoid collection-modified-during-enumeration
-        // when TryFlushBuffer clears the buffer concurrently from the agent event loop.
-        string[] snapshot;
-        lock (_bufferLock)
-            snapshot = _buffer.ToArray();
+        var snapshot = _inputQueue.Snapshot();
         display.Transcript.Set(snapshot, _currentDelta, _hintText, _hintColor);
     }
 
@@ -485,23 +492,19 @@ public sealed class Orchestrator(
 
     private void TryFlushBuffer()
     {
-        string? combined;
-        lock (_bufferLock)
+        try
         {
-            if (!_agentIsReady)
-                return;
-
-            combined = string.Join(Environment.NewLine, _buffer);
-            _buffer.Clear();
-            if (!string.IsNullOrEmpty(combined))
-            {
-                foreach (var line in combined.Split(Environment.NewLine))
-                    display.History.AppendLine($"💬 {line}");
-
-                UpdateTranscript(); // clears the queued lines and restores the idle hint
-                agentService!.Send(combined);
-                _agentIsReady = false;
-            }
+            var combined = _inputQueue.TrySend(agentService!.Send);
+            if (combined is null) return;
+            foreach (var line in combined.Split(Environment.NewLine))
+                display.History.AppendLine($"💬 {line}");
+            UpdateTranscript();
+        }
+        catch (InvalidOperationException ex)
+        {
+            logger.LogError(ex, "Assistant rejected buffered speech");
+            display.History.AppendLine($"⚠ Assistant could not accept speech: {ex.Message}", Display.HistoryColor.Error);
+            UpdateTranscript();
         }
     }
 }

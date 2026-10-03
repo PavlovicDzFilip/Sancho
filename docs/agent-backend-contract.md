@@ -8,7 +8,7 @@ Implementation and review checklist (each item receives a separate reviewed comm
 - [x] Codex compatibility and two-turn coverage.
 - [x] Cursor compatibility and protocol coverage.
 - [x] Hermes compatibility and protocol coverage.
-- [ ] Shared voice flow verification and setup/capability documentation.
+- [x] Shared voice flow verification and setup/capability documentation.
 
 Every backend uses the same `AgentEvent` stream. Emit `Ready` after initialization and when the previous turn has finished. `Send` accepts exactly one outstanding sentence and reserves that turn synchronously; a second `Send` before the next `Ready` throws `InvalidOperationException`. Input must not silently disappear.
 

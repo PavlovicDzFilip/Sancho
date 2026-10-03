@@ -1,6 +1,6 @@
 # Sancho
 
-A voice assistant for the terminal: microphone → transcription → Claude CLI. Speech-to-text runs fully on-device (sherpa-onnx whisper + silero VAD) — no cloud round-trip, your voice never leaves the machine.
+A voice assistant for the terminal: microphone → transcription → Claude Code, Codex CLI, Cursor Agent, or Hermes Agent. Speech-to-text runs fully on-device (sherpa-onnx whisper + silero VAD) — no cloud round-trip, your voice never leaves the machine.
 
 ## Install
 
@@ -24,13 +24,16 @@ Both installers:
 - install it for all users (`C:\Program Files\Sancho` on Windows, `/usr/local/bin` on macOS/Linux),
 - prompt for administrator/sudo rights.
 
-Requirements: the [Claude CLI](https://docs.anthropic.com/en/docs/claude-code/setup), plus ffmpeg on macOS/Linux.
+Requirements: an installed and authenticated CLI for your selected backend (`claude`, `codex`, `cursor-agent` or `agent`, or `hermes`), plus ffmpeg on macOS/Linux. Claude is the default. Sancho checks CLI availability before starting the assistant.
 
 ## Usage
 
 ```bash
 sancho               # start listening in the current directory
 sancho --continue    # resume a previous session
+sancho --agent codex # swap the assistant; microphone and transcription stay the same
+sancho --agent cursor
+sancho --agent hermes
 sancho --help
 ```
 
@@ -49,9 +52,18 @@ Utterances arrive when you stop speaking (~1 s after), not word-by-word. The fir
 ```bash
 sancho config get [key]
 sancho config set model small
+sancho config set agent codex
 ```
 
 The system prompt is read from `.sancho.md` in the directory you run Sancho from. If the file is missing, Sancho creates it with a default prompt and tells you — edit it to customize.
+
+Speech spoken while the assistant is busy is queued and joined into the next turn when it is ready. Each backend reports replies, tools, and errors through the same display. Ctrl+C stops capture and owned assistant processes. If the backend stops unexpectedly, Sancho stops capture and keeps unsent speech visible.
+
+All four backends run in **YOLO mode**, allowing commands and edits without approval prompts. Run Sancho only in a directory where you authorize those actions. Authentication, available models, tools, and MCP configuration remain specific to each native CLI.
+
+`.sancho.md` is appended to Claude's native system prompt, passed as Codex developer instructions, and prepended to each Cursor/Hermes turn. Native instruction precedence and context limits can differ. Session IDs belong to their backend: changing `--agent` starts or resumes that backend's own conversation, and does not transfer history between providers. Cursor's session picker/transcript display uses best-effort local editor session discovery; Hermes session summaries and exports depend on its CLI output.
+
+See [backend verification](docs/backend-verification.md) for tests and current live-check limits.
 
 Config keys: `agent` (claude | cursor | hermes | codex), `model` (tiny | base | small | medium).
 

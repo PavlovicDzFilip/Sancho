@@ -4,7 +4,7 @@ Implementation and review checklist (each item receives a separate reviewed comm
 
 - [x] Shared backend contract and cross-platform process testing seam.
 - [x] Process lifecycle: shutdown, cancellation, unexpected exits, and output draining.
-- [ ] Claude correctness and regression coverage.
+- [x] Claude correctness and regression coverage.
 - [ ] Codex compatibility and two-turn coverage.
 - [ ] Cursor compatibility and protocol coverage.
 - [ ] Hermes compatibility and protocol coverage.
@@ -17,5 +17,6 @@ For accepted input, emit `TurnStart`, then assistant text and tool activity as s
 `AgentLaunchOptions` supplies the target working directory, optional instructions override, and executable/prefix arguments. Adapters should resolve `.sancho.md` from the target directory and map instructions into their native protocol without replacing native tool guidance. All backends use the authorized YOLO permission mode. Resume IDs remain native to each backend.
 
 The test-only `Sancho.ProcessTestHost` executable provides `echo`, `wait`, `exit <code>`, and `flood` modes. `script <fixture-path>` executes JSON lines containing `kind` and string `value`: `stdout`/`stderr` write protocol lines, `read` waits for a stdin line (and appends it to the file in `value` when nonempty), `capture` records backend arguments and cwd to a file, `delay` pauses for milliseconds, and `exit` sets the exit code. Invoke it through `dotnet` using launch prefix arguments to exercise real stdin/stdout/stderr and process lifecycle without authentication, network, or model calls. It is built and copied by `Sancho.Tests` automatically.
+
 
 

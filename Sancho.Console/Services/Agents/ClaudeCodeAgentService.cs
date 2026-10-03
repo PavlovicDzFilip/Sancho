@@ -29,6 +29,7 @@ public sealed class ClaudeCodeAgentService : AgentService
     private Process? _process;
     private StreamWriter? _stdin;
     private TaskCompletionSource? _turnComplete;
+    private readonly HashSet<string> _completedResultIds = new(StringComparer.Ordinal);
     private int _ready;
     private readonly AgentLaunchOptions _launchOptions;
 
@@ -110,15 +111,8 @@ public sealed class ClaudeCodeAgentService : AgentService
         if (!Directory.Exists(dir))
             return null;
 
-        if (_resumeSessionId is { } id)
-        {
-            var path = Path.Combine(dir, id + ".jsonl");
-            return File.Exists(path) ? path : null;
-        }
-
-        return Directory.GetFiles(dir, "*.jsonl")
-            .OrderByDescending(File.GetLastWriteTimeUtc)
-            .FirstOrDefault();
+        var path = Path.Combine(dir, _sessionId + ".jsonl");
+        return File.Exists(path) ? path : null;
     }
 
     private static string GetSessionsDirectory(string sessionRoot, string targetDirectory) =>
@@ -210,7 +204,15 @@ public sealed class ClaudeCodeAgentService : AgentService
                 CreateNoWindow = true
             };
             using var proc = Process.Start(psi)!;
-            proc.WaitForExit(5_000);
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+            if (!proc.WaitForExit(5_000))
+            {
+                proc.Kill(entireProcessTree: true);
+                proc.WaitForExit(3_000);
+                throw new TimeoutException($"`{executable} {args}` timed out.");
+            }
+            Task.WhenAll(stdout, stderr).Wait(TimeSpan.FromSeconds(3));
             return proc.ExitCode;
         }
         catch (Exception ex)
@@ -258,7 +260,7 @@ public sealed class ClaudeCodeAgentService : AgentService
                 "--print", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json",
                 "--permission-mode", "bypassPermissions",
                 _resumeSessionId is null ? "--session-id" : "--resume", _sessionId,
-                "--system-prompt", _systemPrompt
+                "--append-system-prompt", _systemPrompt
             };
             await using var owned = OwnedAgentProcess.Start(_launchOptions.CreateStartInfo(_executable, arguments), token);
             _process = owned.Process;
@@ -381,7 +383,7 @@ public sealed class ClaudeCodeAgentService : AgentService
                     using var doc = JsonDocument.Parse(line);
                     HandleStreamMessage(doc.RootElement, writer);
                 }
-                catch (JsonException)
+                catch (Exception ex) when (ex is JsonException or InvalidOperationException)
                 {
                     writer.TryWrite(new AgentEvent.Status(line, AgentStatusKind.Info));
                 }
@@ -425,6 +427,7 @@ public sealed class ClaudeCodeAgentService : AgentService
 
     private void HandleStreamMessage(JsonElement root, ChannelWriter<AgentEvent> writer)
     {
+        if (root.ValueKind != JsonValueKind.Object) return;
         var type = root.TryGetProperty("type", out var tp) ? tp.GetString() : null;
 
         switch (type)
@@ -441,8 +444,24 @@ public sealed class ClaudeCodeAgentService : AgentService
                 break;
 
             case "result":
+                if (root.TryGetProperty("uuid", out var uuid) && uuid.ValueKind == JsonValueKind.String
+                    && !_completedResultIds.Add(uuid.GetString()!)) break;
+                var completion = _turnComplete;
+                if (completion is null || completion.Task.IsCompleted) break;
+                var subtype = root.TryGetProperty("subtype", out var st) && st.ValueKind == JsonValueKind.String ? st.GetString() : null;
+                var failed = root.TryGetProperty("is_error", out var error) && error.ValueKind == JsonValueKind.True
+                    || subtype?.StartsWith("error", StringComparison.Ordinal) == true;
+                if (failed)
+                {
+                    var details = root.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array
+                        ? string.Join("; ", errors.EnumerateArray().Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() : e.GetRawText()))
+                        : null;
+                    if (string.IsNullOrWhiteSpace(details) && root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.String)
+                        details = result.GetString();
+                    writer.TryWrite(new AgentEvent.Error(details ?? subtype ?? "Claude turn failed"));
+                }
                 writer.TryWrite(AgentEvent.TurnComplete.Instance);
-                _turnComplete?.TrySetResult();
+                completion.TrySetResult();
                 break;
         }
     }
@@ -497,7 +516,7 @@ public sealed class ClaudeCodeAgentService : AgentService
                 continue;
 
             var toolId = block.TryGetProperty("tool_use_id", out var tid)
-                ? tid.GetString()?[..Math.Min(12, tid.GetString()!.Length)]
+                ? tid.GetString()
                 : "?";
             var isError = block.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
             writer.TryWrite(new AgentEvent.ToolResult(toolId!, isError));

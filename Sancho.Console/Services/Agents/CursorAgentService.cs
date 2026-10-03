@@ -79,18 +79,14 @@ public sealed class CursorAgentService : AgentService
 
     /// <summary>
     /// Lists stored agent sessions for a target directory, newest first.
-    /// Cursor keeps one <c>&lt;session-id&gt;.jsonl</c> transcript per
-    /// <c>agent-transcripts/&lt;session-id&gt;/</c> directory.
+    /// Combines native CLI chat metadata with IDE agent transcripts.
     /// </summary>
     public static IReadOnlyList<AgentService.SessionSummary> ListSessions(
         string sessionRoot, string targetDirectory)
     {
         var dir = Path.Combine(sessionRoot, "projects",
             SessionJson.EncodeProjectDirectory(targetDirectory), "agent-transcripts");
-        if (!Directory.Exists(dir))
-            return Array.Empty<AgentService.SessionSummary>();
-
-        return Directory.GetDirectories(dir)
+        var transcripts = (Directory.Exists(dir) ? Directory.GetDirectories(dir) : Array.Empty<string>())
             .Select(d =>
             {
                 var id = Path.GetFileName(d);
@@ -103,11 +99,50 @@ public sealed class CursorAgentService : AgentService
                         ? SessionJson.GetSessionPreview(jsonl, SessionJson.Format.Cursor)
                         : "(no transcript)");
             })
-            .OrderByDescending(s => s.LastActivity)
             .ToList();
+
+        var chats = Path.Combine(sessionRoot, "chats");
+        if (Directory.Exists(chats))
+        {
+            foreach (var workspace in Directory.GetDirectories(chats))
+            foreach (var chat in Directory.GetDirectories(workspace))
+            {
+                try
+                {
+                    var metadataPath = Path.Combine(chat, "meta.json");
+                    if (!File.Exists(metadataPath)) continue;
+                    using var metadata = JsonDocument.Parse(File.ReadAllText(metadataPath));
+                    var root = metadata.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object) continue;
+                    if (!root.TryGetProperty("hasConversation", out var conversation) || conversation.ValueKind != JsonValueKind.True
+                        || !root.TryGetProperty("cwd", out var cwd) || cwd.ValueKind != JsonValueKind.String
+                        || !SameDirectory(cwd.GetString()!, targetDirectory)) continue;
+                    var timestamp = root.TryGetProperty("updatedAtMs", out var updated) && updated.ValueKind == JsonValueKind.Number ? updated
+                        : root.TryGetProperty("createdAtMs", out var created) ? created : default;
+                    var lastActivity = timestamp.ValueKind == JsonValueKind.Number && timestamp.TryGetInt64(out var milliseconds)
+                        ? DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).LocalDateTime
+                        : File.GetLastWriteTime(metadataPath);
+                    transcripts.Add(new AgentService.SessionSummary(Path.GetFileName(chat), lastActivity, null, "(CLI conversation)"));
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
+                {
+                    // Metadata may be partially written or belong to an incompatible CLI version.
+                }
+            }
+        }
+
+        return transcripts.GroupBy(session => session.Id, StringComparer.Ordinal)
+            .Select(group => group.OrderByDescending(session => session.LastActivity).First())
+            .OrderByDescending(session => session.LastActivity).ToList();
     }
 
-    /// <inheritdoc />
+    private static bool SameDirectory(string left, string right) =>
+        string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    /// <summary>Reads IDE JSONL transcripts when available. Native CLI history lives in a binary
+    /// store and is not exposed here; the CLI still resumes those conversations by session ID.</summary>
     public override IReadOnlyList<(bool IsUser, string Text)> GetSessionMessages()
     {
         var file = ResolveSessionFile();
@@ -360,6 +395,8 @@ public sealed class CursorAgentService : AgentService
                     writer.TryWrite(new AgentEvent.Error($"{Executable} exited with code {process.ExitCode}"));
                 else if (!state.Terminal && !ct.IsCancellationRequested)
                     writer.TryWrite(new AgentEvent.Error("Cursor ended without a terminal result."));
+                else if (state.SuccessfulTerminal && _sessionId is null && !ct.IsCancellationRequested)
+                    throw new InvalidOperationException("Cursor did not return a session ID; refusing to start the next turn in a new conversation.");
         }
         finally
         {
@@ -390,6 +427,7 @@ public sealed class CursorAgentService : AgentService
     private sealed class TurnState
     {
         public bool Terminal;
+        public bool SuccessfulTerminal;
         public bool HasAssistantText;
     }
 
@@ -427,6 +465,7 @@ public sealed class CursorAgentService : AgentService
 
             case "result":
                 state.Terminal = true;
+                state.SuccessfulTerminal = !IsError(root) && (String(root, "subtype") is null or "success");
                 if (IsError(root) || String(root, "subtype") is { } subtype && subtype != "success")
                     writer.TryWrite(new AgentEvent.Error(String(root, "result") ?? String(root, "error") ?? "Cursor turn failed."));
                 else if (!state.HasAssistantText && String(root, "result") is { Length: > 0 } result)

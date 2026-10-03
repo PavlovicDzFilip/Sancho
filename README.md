@@ -61,7 +61,7 @@ Speech spoken while the assistant is busy is queued and joined into the next tur
 
 All four backends run in **YOLO mode**, allowing commands and edits without approval prompts. Run Sancho only in a directory where you authorize those actions. Authentication, available models, tools, and MCP configuration remain specific to each native CLI.
 
-`.sancho.md` is appended to Claude's native system prompt, passed as Codex developer instructions, and prepended to each Cursor/Hermes turn. Native instruction precedence and context limits can differ. Session IDs belong to their backend: changing `--agent` starts or resumes that backend's own conversation, and does not transfer history between providers. Cursor's session picker/transcript display uses best-effort local editor session discovery; Hermes session summaries and exports depend on its CLI output.
+`.sancho.md` is appended to Claude's native system prompt, passed as Codex developer instructions, and prepended to each Cursor/Hermes turn. Native instruction precedence and context limits can differ. Session IDs belong to their backend: changing `--agent` starts or resumes that backend's own conversation, and does not transfer history between providers. Cursor's session picker combines native CLI chat metadata and local IDE transcripts. Native CLI conversations resume by ID, but their binary history is not displayed by Sancho; IDE JSONL transcripts can be displayed. Hermes session summaries and exports depend on its CLI output.
 
 See [backend verification](docs/backend-verification.md) for tests and current live-check limits.
 

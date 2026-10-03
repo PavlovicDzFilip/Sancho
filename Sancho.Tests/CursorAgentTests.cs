@@ -157,6 +157,20 @@ public class CursorAgentTests
         });
     }
 
+    [Fact]
+    public async Task SuccessfulTurnWithoutSessionIdClosesStreamInsteadOfStartingFresh()
+    {
+        await Exercise(new[] { "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"answer\"}" }, 0, 1,
+            (events, _, _) =>
+            {
+                Assert.Contains("session ID", Assert.Single(events.OfType<AgentEvent.Error>()).Message);
+                Assert.Single(events.OfType<AgentEvent.TurnComplete>());
+                Assert.Single(events.OfType<AgentEvent.Ready>());
+                Assert.IsType<AgentEvent.TurnComplete>(events[^1]);
+                return Task.CompletedTask;
+            });
+    }
+
     private static async Task Exercise(string[] lines, int exit, int turns,
         Func<List<AgentEvent>, string, string, Task> check)
     {

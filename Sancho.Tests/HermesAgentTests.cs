@@ -8,6 +8,52 @@ namespace Sancho.Tests;
 public class HermesAgentTests
 {
     [Fact]
+    public async Task WorkspaceDiagnosticsDoNotBreakStructuredTurns()
+    {
+        await Exercise(new[]
+        {
+            "↪ restored workspace dir: test-workspace",
+            "{\"type\":\"system\",\"session_id\":\"20261003_120000_abcd12\"}",
+            "⚠️ Normalized model 'deepseek-chat' to 'deepseek-flash' for deepseek",
+            "{\"type\":\"text\",\"text\":\"reply\"}",
+            "{\"type\":\"result\",\"exit_code\":0}"
+        }, 0, 2, (events, _, _) =>
+        {
+            Assert.DoesNotContain(events, e => e is AgentEvent.Error);
+            Assert.Equal(new[] { "reply", "reply" }, events.OfType<AgentEvent.AssistantText>().Select(e => e.Text));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task SameNameToolResultsPreserveNativeCallIds()
+    {
+        await Exercise(new[]
+        {
+            "{\"type\":\"tool_use\",\"name\":\"read_file\",\"tool_call_id\":\"call-a\"}",
+            "{\"type\":\"tool_use\",\"name\":\"read_file\",\"tool_call_id\":\"call-b\"}",
+            "{\"type\":\"tool_result\",\"name\":\"read_file\",\"tool_call_id\":\"call-b\",\"is_error\":true}",
+            "{\"type\":\"tool_result\",\"name\":\"read_file\",\"tool_call_id\":\"call-a\",\"is_error\":false}",
+            "{\"type\":\"result\",\"exit_code\":0,\"session_id\":\"20261003_120000_abcd12\"}"
+        }, 0, 1, (events, _, _) =>
+        {
+            Assert.Equal(new[] { new AgentEvent.ToolResult("call-b", true), new AgentEvent.ToolResult("call-a", false) }, events.OfType<AgentEvent.ToolResult>());
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task MalformedStructuredEventFailsEvenWhenFollowedBySuccessfulResult()
+    {
+        await Exercise(new[] { "{broken", "{\"type\":\"result\",\"exit_code\":0,\"session_id\":\"id\"}" }, 0, 1,
+            (events, _, _) =>
+            {
+                Assert.Contains(events, e => e is AgentEvent.Error);
+                return Task.CompletedTask;
+            });
+    }
+
+    [Fact]
     public async Task TwoTurnsPreserveSessionInstructionsWorkspaceAndToolResults()
     {
         var lines = new[]

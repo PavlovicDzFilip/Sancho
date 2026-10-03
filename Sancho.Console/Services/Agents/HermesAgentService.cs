@@ -156,6 +156,10 @@ public sealed class HermesAgentService : AgentService
             while (await process.StandardOutput.ReadLineAsync(ct) is { } line)
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
+                // Hermes can print bootstrap/workspace diagnostics before enabling JSON mode.
+                // Ignore plain text, but still reject damaged structured events and require a result.
+                var trimmed = line.AsSpan().TrimStart();
+                if (trimmed[0] is not ('{' or '[')) continue;
                 using var doc = JsonDocument.Parse(line);
                 var root = doc.RootElement;
                 if (root.ValueKind != JsonValueKind.Object) throw new InvalidOperationException("Invalid Hermes stream event.");
@@ -171,7 +175,8 @@ public sealed class HermesAgentService : AgentService
                         writer.TryWrite(new AgentEvent.ToolUse(String(root, "name"), root.TryGetProperty("input", out var input) ? input.GetRawText() : ""));
                         break;
                     case "tool_result":
-                        writer.TryWrite(new AgentEvent.ToolResult(String(root, "name"), root.TryGetProperty("is_error", out var error) && error.ValueKind == JsonValueKind.True));
+                        var toolId = String(root, "tool_call_id");
+                        writer.TryWrite(new AgentEvent.ToolResult(toolId.Length > 0 ? toolId : String(root, "name"), root.TryGetProperty("is_error", out var error) && error.ValueKind == JsonValueKind.True));
                         break;
                     case "result":
                         terminal = true;

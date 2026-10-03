@@ -28,13 +28,15 @@ public sealed class CodexAgentService : AgentService
     private readonly Channel<string> _input = Channel.CreateUnbounded<string>();
 
     private string? _sessionId;
-    private volatile bool _ready;
+    private int _ready;
+    private readonly AgentLaunchOptions _launchOptions;
 
-    public CodexAgentService(string? resumeSessionId, ILogger<CodexAgentService> logger)
+    public CodexAgentService(string? resumeSessionId, ILogger<CodexAgentService> logger, AgentLaunchOptions? launchOptions = null)
     {
         _resumeSessionId = resumeSessionId;
         _sessionId = resumeSessionId;
         _logger = logger;
+        _launchOptions = launchOptions ?? new AgentLaunchOptions();
     }
 
     /// <inheritdoc />
@@ -43,9 +45,10 @@ public sealed class CodexAgentService : AgentService
     /// <inheritdoc />
     public override void Send(string sentence)
     {
-        if (!_ready)
+        if (Interlocked.CompareExchange(ref _ready, 0, 1) != 1)
             throw new InvalidOperationException($"{Executable} is not ready to accept input.");
-        _input.Writer.TryWrite(sentence);
+        if (!_input.Writer.TryWrite(sentence))
+            throw new InvalidOperationException("Agent event stream has stopped.");
     }
 
     /// <inheritdoc />
@@ -53,7 +56,8 @@ public sealed class CodexAgentService : AgentService
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         var events = Channel.CreateUnbounded<AgentEvent>();
-        var worker = WorkerAsync(events.Writer, ct);
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var worker = WorkerAsync(events.Writer, lifetime.Token);
 
         try
         {
@@ -62,6 +66,7 @@ public sealed class CodexAgentService : AgentService
         }
         finally
         {
+            lifetime.Cancel();
             await worker;
         }
     }
@@ -149,39 +154,44 @@ public sealed class CodexAgentService : AgentService
 
     private async Task WorkerAsync(ChannelWriter<AgentEvent> writer, CancellationToken ct)
     {
+        var turnActive = false;
         try
         {
-            _ready = true;
+            Interlocked.Exchange(ref _ready, 1);
             writer.TryWrite(AgentEvent.Ready.Instance);
 
             await foreach (var sentence in _input.Reader.ReadAllAsync(ct))
             {
-                _ready = false;
+                Interlocked.Exchange(ref _ready, 0);
+                turnActive = true;
                 writer.TryWrite(AgentEvent.TurnStart.Instance);
                 await RunTurnAsync(writer, sentence, ct);
                 writer.TryWrite(AgentEvent.TurnComplete.Instance);
-                _ready = true;
+                turnActive = false;
+                Interlocked.Exchange(ref _ready, 1);
                 writer.TryWrite(AgentEvent.Ready.Instance);
             }
         }
         catch (OperationCanceledException)
         {
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        catch (Exception ex)
         {
             writer.TryWrite(new AgentEvent.Error($"{Executable} failed: {ex.Message}"));
+            if (turnActive)
+                writer.TryWrite(AgentEvent.TurnComplete.Instance);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _ready, 0);
+            _input.Writer.TryComplete();
+            writer.TryComplete();
         }
     }
 
     private async Task RunTurnAsync(ChannelWriter<AgentEvent> writer, string sentence, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo(Executable)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
+        var psi = _launchOptions.CreateStartInfo(Executable, []);
         psi.ArgumentList.Add("exec");
         if (_sessionId is not null)
         {
@@ -192,35 +202,44 @@ public sealed class CodexAgentService : AgentService
         psi.ArgumentList.Add("--json");
         psi.ArgumentList.Add(sentence);
 
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start {Executable} process.");
+        await using var owned = OwnedAgentProcess.Start(psi, ct);
+        var process = owned.Process;
+        process.StandardInput.Close();
         _logger.LogDebug("→ {Executable}: {Text}", Executable, sentence);
 
         var stderrTask = ReadStderrAsync(process, writer, ct);
-
-        using var reader = new StreamReader(process.StandardOutput.BaseStream, Encoding.UTF8);
-        while (await reader.ReadLineAsync(ct) is { } line)
+        try
         {
-            if (string.IsNullOrWhiteSpace(line))
-                continue;
 
-            _logger.LogDebug("← {Executable}: {Line}", Executable, line);
-            try
+            using var reader = new StreamReader(process.StandardOutput.BaseStream, Encoding.UTF8);
+            while (await reader.ReadLineAsync(ct) is { } line)
             {
-                using var doc = JsonDocument.Parse(line);
-                HandleEvent(doc.RootElement, writer);
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                _logger.LogDebug("← {Executable}: {Line}", Executable, line);
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    HandleEvent(doc.RootElement, writer);
+                }
+                catch (JsonException)
+                {
+                    writer.TryWrite(new AgentEvent.Status(line, AgentStatusKind.Info));
+                }
             }
-            catch (JsonException)
-            {
-                writer.TryWrite(new AgentEvent.Status(line, AgentStatusKind.Info));
-            }
+
+            await process.WaitForExitAsync(ct);
+            await stderrTask;
+
+            if (process.ExitCode != 0 && !ct.IsCancellationRequested)
+                writer.TryWrite(new AgentEvent.Error($"{Executable} exited with code {process.ExitCode}"));
         }
-
-        await process.WaitForExitAsync(ct);
-        await stderrTask;
-
-        if (process.ExitCode != 0 && !ct.IsCancellationRequested)
-            writer.TryWrite(new AgentEvent.Error($"{Executable} exited with code {process.ExitCode}"));
+        finally
+        {
+            await owned.StopAsync();
+            await stderrTask;
+        }
     }
 
     private async Task ReadStderrAsync(Process process, ChannelWriter<AgentEvent> writer, CancellationToken ct)

@@ -24,6 +24,14 @@ switch (args.FirstOrDefault())
                 case "capture":
                     await File.WriteAllTextAsync(value, JsonSerializer.Serialize(new { arguments = args.Skip(2), directory = Directory.GetCurrentDirectory() }));
                     break;
+                case "pid": await File.WriteAllTextAsync(value, Environment.ProcessId.ToString()); break;
+                case "child":
+                    var launch = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true };
+                    launch.ArgumentList.Add(typeof(Program).Assembly.Location);
+                    launch.ArgumentList.Add("child-wait");
+                    using (var child = System.Diagnostics.Process.Start(launch)!)
+                        await File.WriteAllTextAsync(value, child.Id.ToString());
+                    break;
                 case "delay": await Task.Delay(int.Parse(value)); break;
                 case "exit": return int.Parse(value);
                 default: throw new InvalidOperationException("Unknown script step");
@@ -37,6 +45,9 @@ switch (args.FirstOrDefault())
         break;
     case "wait":
         await output.WriteLineAsync("ready");
+        await Task.Delay(Timeout.Infinite);
+        break;
+    case "child-wait":
         await Task.Delay(Timeout.Infinite);
         break;
     case "exit":

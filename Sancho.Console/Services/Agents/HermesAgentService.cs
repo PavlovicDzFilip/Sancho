@@ -29,13 +29,15 @@ public sealed class HermesAgentService : AgentService
     private readonly Channel<string> _input = Channel.CreateUnbounded<string>();
 
     private string? _sessionId;
-    private volatile bool _ready;
+    private int _ready;
+    private readonly AgentLaunchOptions _launchOptions;
 
-    public HermesAgentService(string? resumeSessionId, ILogger<HermesAgentService> logger)
+    public HermesAgentService(string? resumeSessionId, ILogger<HermesAgentService> logger, AgentLaunchOptions? launchOptions = null)
     {
         _resumeSessionId = resumeSessionId;
         _sessionId = resumeSessionId;
         _logger = logger;
+        _launchOptions = launchOptions ?? new AgentLaunchOptions();
     }
 
     /// <inheritdoc />
@@ -44,9 +46,10 @@ public sealed class HermesAgentService : AgentService
     /// <inheritdoc />
     public override void Send(string sentence)
     {
-        if (!_ready)
+        if (Interlocked.CompareExchange(ref _ready, 0, 1) != 1)
             throw new InvalidOperationException($"{Executable} is not ready to accept input.");
-        _input.Writer.TryWrite(sentence);
+        if (!_input.Writer.TryWrite(sentence))
+            throw new InvalidOperationException("Agent event stream has stopped.");
     }
 
     /// <inheritdoc />
@@ -54,7 +57,8 @@ public sealed class HermesAgentService : AgentService
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         var events = Channel.CreateUnbounded<AgentEvent>();
-        var worker = WorkerAsync(events.Writer, ct);
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var worker = WorkerAsync(events.Writer, lifetime.Token);
 
         try
         {
@@ -63,6 +67,7 @@ public sealed class HermesAgentService : AgentService
         }
         finally
         {
+            lifetime.Cancel();
             await worker;
         }
     }
@@ -150,15 +155,17 @@ public sealed class HermesAgentService : AgentService
 
     private async Task WorkerAsync(ChannelWriter<AgentEvent> writer, CancellationToken ct)
     {
+        var turnActive = false;
         try
         {
-            _ready = true;
+            Interlocked.Exchange(ref _ready, 1);
             writer.TryWrite(AgentEvent.Ready.Instance);
 
             var firstTurn = true;
             await foreach (var sentence in _input.Reader.ReadAllAsync(ct))
             {
-                _ready = false;
+                Interlocked.Exchange(ref _ready, 0);
+                turnActive = true;
                 writer.TryWrite(AgentEvent.TurnStart.Instance);
 
                 var text = await RunTurnAsync(sentence, ct);
@@ -179,29 +186,32 @@ public sealed class HermesAgentService : AgentService
 
                 firstTurn = false;
                 writer.TryWrite(AgentEvent.TurnComplete.Instance);
-                _ready = true;
+                turnActive = false;
+                Interlocked.Exchange(ref _ready, 1);
                 writer.TryWrite(AgentEvent.Ready.Instance);
             }
         }
         catch (OperationCanceledException)
         {
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        catch (Exception ex)
         {
             writer.TryWrite(new AgentEvent.Error($"{Executable} failed: {ex.Message}"));
+            if (turnActive)
+                writer.TryWrite(AgentEvent.TurnComplete.Instance);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _ready, 0);
+            _input.Writer.TryComplete();
+            writer.TryComplete();
         }
     }
 
     /// <summary>Runs one one-shot turn; returns the final answer text, or null on failure.</summary>
     private async Task<string?> RunTurnAsync(string sentence, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo(Executable)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
+        var psi = _launchOptions.CreateStartInfo(Executable, []);
         psi.ArgumentList.Add("-z");
         psi.ArgumentList.Add(sentence);
         if (_sessionId is not null)
@@ -210,23 +220,32 @@ public sealed class HermesAgentService : AgentService
             psi.ArgumentList.Add(_sessionId);
         }
 
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start {Executable} process.");
+        await using var owned = OwnedAgentProcess.Start(psi, ct);
+        var process = owned.Process;
+        process.StandardInput.Close();
         _logger.LogDebug("→ {Executable}: {Text}", Executable, sentence);
 
         var stderrTask = ReadAllAsync(process.StandardError, ct);
-        var stdout = await ReadAllAsync(process.StandardOutput, ct);
-        await process.WaitForExitAsync(ct);
-        var stderr = await stderrTask;
+        try
+        {
+            var stdout = await ReadAllAsync(process.StandardOutput, ct);
+            await process.WaitForExitAsync(ct);
+            var stderr = await stderrTask;
 
-        if (!string.IsNullOrWhiteSpace(stderr))
-            _logger.LogDebug("hermes stderr: {Text}", stderr.Trim());
+            if (!string.IsNullOrWhiteSpace(stderr))
+                _logger.LogDebug("hermes stderr: {Text}", stderr.Trim());
 
-        if (process.ExitCode != 0 && !ct.IsCancellationRequested)
-            return null;
+            if (process.ExitCode != 0 && !ct.IsCancellationRequested)
+                return null;
 
-        var text = stdout.Trim();
-        return text.Length > 0 ? text : null;
+            var text = stdout.Trim();
+            return text.Length > 0 ? text : null;
+        }
+        finally
+        {
+            await owned.StopAsync();
+            await stderrTask;
+        }
     }
 
     /// <summary>Finds the newest session id in `hermes sessions list` output.</summary>

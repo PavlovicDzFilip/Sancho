@@ -8,6 +8,70 @@ namespace Sancho.Tests;
 public class CursorAgentTests
 {
     [Fact]
+    public void DiscoveryUsesUserPathAndInstallDirectoryAndRejectsEditor()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "sancho-cursor-discovery-" + Guid.NewGuid());
+        var process = Path.Combine(root, "process");
+        var user = Path.Combine(root, "user");
+        var installed = Path.Combine(root, "installed");
+        foreach (var directory in new[] { process, user, installed }) Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(Path.Combine(process, "cursor.exe"), "editor");
+            File.WriteAllText(Path.Combine(user, "agent.exe"), "unrelated agent");
+            File.WriteAllText(Path.Combine(installed, "cursor-agent.cmd"), "official shim");
+            var oldVersion = Path.Combine(installed, "versions", "2026.9.30-abc");
+            var newVersion = Path.Combine(installed, "versions", "2026.10.01-e373342");
+            foreach (var version in new[] { oldVersion, newVersion })
+            {
+                Directory.CreateDirectory(version);
+                File.WriteAllText(Path.Combine(version, "node.exe"), "node");
+                File.WriteAllText(Path.Combine(version, "index.js"), "entrypoint");
+            }
+            var directories = CursorAgentService.SearchDirectories(process, user, installed).ToArray();
+            Assert.Equal(new[] { process, user, installed }, directories);
+            var launch = CursorAgentService.ResolveLaunch(directories, windows: true,
+                candidate => candidate.PrefixArguments.Count == 1);
+            Assert.Equal(Path.Combine(newVersion, "node.exe"), launch.Executable);
+            Assert.Equal(Path.Combine(newVersion, "index.js"), Assert.Single(launch.PrefixArguments));
+            Assert.Equal("cursor-agent.cmd", launch.InvokedAs);
+            File.Delete(Path.Combine(installed, "cursor-agent.cmd"));
+            Assert.Throws<InvalidOperationException>(() => CursorAgentService.ResolveLaunch(directories, true, _ => false));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData("Cursor editor --resume --output-format", false)]
+    [InlineData("Unrelated agent --resume --output-format stream-json", false)]
+    [InlineData("Cursor Agent --resume --output-format stream-json", true)]
+    public void AgentIdentityRequiresCursorStreamingAndResume(string help, bool expected) =>
+        Assert.Equal(expected, CursorAgentService.IsAgentHelp(help));
+
+    [Fact]
+    public async Task DirectLaunchPreservesLiteralArgumentsAndInvocationEnvironment()
+    {
+        var host = Path.Combine(AppContext.BaseDirectory, "process-test-host", "Sancho.ProcessTestHost.dll");
+        var launch = new CursorAgentService.CliLaunch("dotnet", new[] { host, "echo" }, "cursor-agent.cmd");
+        var info = launch.CreateStartInfo(new AgentLaunchOptions());
+        var prompt = "quotes \"double\" 'single' & | %PATH% !bang! $variable\nnext line \\";
+        info.ArgumentList.Add("-p");
+        info.ArgumentList.Add(prompt);
+        Assert.False(info.UseShellExecute);
+        Assert.Equal("cursor-agent.cmd", info.Environment["CURSOR_INVOKED_AS"]);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var owned = OwnedAgentProcess.Start(info, timeout.Token);
+        owned.Process.StandardInput.Close();
+        var output = owned.Process.StandardOutput.ReadToEndAsync(timeout.Token);
+        var error = owned.Process.StandardError.ReadToEndAsync(timeout.Token);
+        await owned.Process.WaitForExitAsync(timeout.Token);
+        Assert.Equal(0, owned.Process.ExitCode);
+        Assert.Equal("", await error);
+        using var document = JsonDocument.Parse(await output);
+        Assert.Equal(new[] { "-p", prompt }, document.RootElement.GetProperty("arguments").EnumerateArray().Select(value => value.GetString()));
+    }
+
+    [Fact]
     public void TranscriptResolutionUsesOnlyKnownSessionEvenWhenAnotherIsNewer()
     {
         var root = Path.Combine(Path.GetTempPath(), "sancho-cursor-transcripts-" + Guid.NewGuid());

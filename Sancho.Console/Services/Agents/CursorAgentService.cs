@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 
@@ -116,43 +117,112 @@ public sealed class CursorAgentService : AgentService
     }
 
     /// <inheritdoc />
-    public override void VerifyAvailable() => VerifyAvailable(ResolveExecutable());
+    public override void VerifyAvailable() => VerifyAvailable(Executable);
 
-    private static string ResolveExecutable()
+    internal sealed record CliLaunch(string Executable, IReadOnlyList<string> PrefixArguments, string? InvokedAs = null)
     {
-        // Retain the unambiguous legacy name when installed. The modern CLI
-        // is named agent; verify its identity before launching a generic name.
-        var extensions = OperatingSystem.IsWindows() ? new[] { ".exe", ".cmd", ".bat", "" } : new[] { "" };
-        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
-            foreach (var extension in extensions)
-            {
-                var path = Path.Combine(directory.Trim('"'), Executable + extension);
-                if (File.Exists(path)) return path;
-            }
+        public ProcessStartInfo CreateStartInfo(AgentLaunchOptions options)
+        {
+            var info = options.CreateStartInfo(Executable, PrefixArguments);
+            if (InvokedAs is not null) info.Environment["CURSOR_INVOKED_AS"] = InvokedAs;
+            return info;
+        }
+    }
+
+    private static CliLaunch ResolveLaunch() => ResolveLaunch(
+        SearchDirectories(Environment.GetEnvironmentVariable("PATH"),
+            OperatingSystem.IsWindows() ? Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User) : null,
+            OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "cursor-agent") : null),
+        OperatingSystem.IsWindows(), launch => CheckLaunch(launch, "--help", requireAgentHelp: true));
+
+    internal static IEnumerable<string> SearchDirectories(string? processPath, string? userPath, string? installDirectory) =>
+        new[] { processPath, userPath }.Where(path => path is not null)
+            .SelectMany(path => path!.Split(Path.PathSeparator))
+            .Append(installDirectory ?? "").Select(path => path.Trim().Trim('"'))
+            .Where(path => path.Length > 0).Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+    internal static CliLaunch ResolveLaunch(IEnumerable<string> directories, bool windows, Func<CliLaunch, bool> isAgent)
+    {
+        var paths = directories.ToArray();
+        var extensions = windows ? new[] { ".exe", ".cmd", ".ps1", ".bat", "" } : new[] { "" };
+        // Names take priority over directories: prefer the unambiguous name,
+        // then the modern agent name, and only accept cursor if it is the CLI.
+        foreach (var name in new[] { "cursor-agent", "agent", "cursor" })
+            foreach (var directory in paths)
+                foreach (var extension in extensions)
+                {
+                    var path = Path.Combine(directory, name + extension);
+                    if (!File.Exists(path)) continue;
+                    var launch = windows && extension is ".cmd" or ".ps1" or ".bat"
+                        ? BundledWindowsLaunch(path) : new CliLaunch(path, Array.Empty<string>());
+                    if (launch is not null && isAgent(launch)) return launch;
+                }
+        throw new InvalidOperationException("Could not find Cursor's agent CLI (`cursor-agent`, `agent`, or an agent-capable `cursor`). Install it from cursor.com and try again.");
+    }
+
+    internal static CliLaunch? BundledWindowsLaunch(string wrapper)
+    {
+        // The official Windows shim delegates to node.exe + index.js. Launch
+        // those directly so cmd/legacy PowerShell cannot reinterpret prompts.
+        var directory = Path.GetDirectoryName(Path.GetFullPath(wrapper))!;
+        var candidates = new List<string> { directory };
+        var versions = Path.Combine(directory, "versions");
+        if (Directory.Exists(versions))
+            candidates.AddRange(Directory.GetDirectories(versions)
+                .Select(path => (Path: path, Match: Regex.Match(Path.GetFileName(path), @"^(\d{4})\.(\d{1,2})\.(\d{1,2})(-\d{2}-\d{2}-\d{2})?-[a-f0-9]+$")))
+                .Where(item => item.Match.Success)
+                .OrderByDescending(item => int.Parse(item.Match.Groups[1].Value))
+                .ThenByDescending(item => int.Parse(item.Match.Groups[2].Value))
+                .ThenByDescending(item => int.Parse(item.Match.Groups[3].Value))
+                .ThenByDescending(item => item.Match.Groups[4].Value, StringComparer.Ordinal)
+                .Select(item => item.Path));
+        foreach (var candidate in candidates)
+        {
+            var node = Path.Combine(candidate, "node.exe");
+            var entrypoint = Path.Combine(candidate, "index.js");
+            if (File.Exists(node) && File.Exists(entrypoint))
+                return new CliLaunch(node, new[] { entrypoint }, Path.GetFileName(wrapper));
+        }
+        return null;
+    }
+
+    private static bool CheckLaunch(CliLaunch launch, string argument, bool requireAgentHelp)
+    {
         try
         {
-            var psi = new ProcessStartInfo("agent", "--help")
-            {
-                RedirectStandardOutput = true, RedirectStandardError = true,
-                UseShellExecute = false, CreateNoWindow = true
-            };
+            var psi = launch.CreateStartInfo(new AgentLaunchOptions());
+            psi.ArgumentList.Add(argument);
             using var process = Process.Start(psi);
-            if (process is not null)
+            if (process is null) return false;
+            process.StandardInput.Close();
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(5000))
             {
-                var stdout = process.StandardOutput.ReadToEndAsync();
-                var stderr = process.StandardError.ReadToEndAsync();
-                if (!process.WaitForExit(5000)) { process.Kill(entireProcessTree: true); process.WaitForExit(); }
-                var help = stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult();
-                if (process.ExitCode == 0 && help.Contains("Cursor", StringComparison.OrdinalIgnoreCase)) return "agent";
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit();
+                return false;
             }
+            var help = stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult();
+            return process.ExitCode == 0 && (!requireAgentHelp || IsAgentHelp(help));
         }
         catch (System.ComponentModel.Win32Exception) { }
-        throw new InvalidOperationException("Could not find Cursor's CLI (`cursor-agent` or Cursor's `agent`). Install it from cursor.com and try again.");
+        return false;
     }
+
+    internal static bool IsAgentHelp(string help) => help.Contains("Cursor", StringComparison.OrdinalIgnoreCase)
+        && help.Contains("--output-format", StringComparison.Ordinal) && help.Contains("--resume", StringComparison.Ordinal)
+        && help.Contains("stream-json", StringComparison.Ordinal);
 
     /// <summary>Checks cursor-agent is installed (auth failures surface on the first turn).</summary>
     public static void VerifyAvailable(string executable = Executable)
     {
+        if (executable == Executable)
+        {
+            if (!CheckLaunch(ResolveLaunch(), "--version", requireAgentHelp: false))
+                throw new InvalidOperationException("Cursor CLI failed its --version check.");
+            return;
+        }
         try
         {
             var psi = new ProcessStartInfo(executable, "--version")
@@ -230,7 +300,9 @@ public sealed class CursorAgentService : AgentService
 
     private async Task RunTurnAsync(ChannelWriter<AgentEvent> writer, string sentence, CancellationToken ct)
     {
-        var psi = _launchOptions.CreateStartInfo(_launchOptions.Executable is null ? ResolveExecutable() : Executable, []);
+        var psi = _launchOptions.Executable is null
+            ? ResolveLaunch().CreateStartInfo(_launchOptions)
+            : _launchOptions.CreateStartInfo(Executable, []);
         psi.ArgumentList.Add("-p");
         // Cursor has no documented append-system-prompt option. Keep its native
         // guidance and supply Sancho's instructions in the user prompt instead.

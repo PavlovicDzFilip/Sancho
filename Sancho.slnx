@@ -1,3 +1,5 @@
 <Solution>
   <Project Path="Sancho.Console/Sancho.Console.csproj" />
+  <Project Path="Sancho.Tests/Sancho.Tests.csproj" />
+  <Project Path="Sancho.ProcessTestHost/Sancho.ProcessTestHost.csproj" />
 </Solution>

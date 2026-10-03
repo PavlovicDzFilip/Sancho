@@ -11,7 +11,7 @@ namespace Sancho.Console.Agents;
 /// <summary>
 /// Agent backend for OpenAI's Codex CLI. One process per turn using
 /// <c>codex exec --json</c> (machine-readable JSONL events). The first
-/// turn's <c>session_meta</c> event carries the session id, which later
+/// turn's <c>thread.started</c> event carries the session id, which later
 /// turns resume via <c>codex exec resume &lt;id&gt; --json</c>.
 /// </summary>
 public sealed class CodexAgentService : AgentService
@@ -73,25 +73,25 @@ public sealed class CodexAgentService : AgentService
 
     /// <summary>The codex session store: <c>~/.codex</c>.</summary>
     public static string DefaultSessionRoot() =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        Environment.GetEnvironmentVariable("CODEX_HOME") is { Length: > 0 } home ? home : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
 
     /// <inheritdoc />
     public override IReadOnlyList<AgentService.SessionSummary> ListSessions(string targetDirectory) =>
-        ListAllSessions(DefaultSessionRoot());
+        ListAllSessions(DefaultSessionRoot(), targetDirectory);
 
     /// <summary>
     /// Lists stored sessions from the rollout files under
     /// <c>~/.codex/sessions/&lt;year&gt;/&lt;month&gt;/&lt;day&gt;/</c>,
-    /// newest first. Codex sessions are global (not per directory), so the
-    /// picker shows them all.
+    /// newest first, optionally filtering session metadata by working directory.
     /// </summary>
-    public static IReadOnlyList<AgentService.SessionSummary> ListAllSessions(string sessionRoot)
+    public static IReadOnlyList<AgentService.SessionSummary> ListAllSessions(string sessionRoot, string? targetDirectory = null)
     {
         var dir = Path.Combine(sessionRoot, "sessions");
         if (!Directory.Exists(dir))
             return Array.Empty<AgentService.SessionSummary>();
 
         return Directory.GetFiles(dir, "rollout-*.jsonl", SearchOption.AllDirectories)
+            .Where(file => MatchesDirectory(file, targetDirectory))
             .Select(file =>
             {
                 var match = SessionIdPattern.Match(Path.GetFileNameWithoutExtension(file));
@@ -118,7 +118,7 @@ public sealed class CodexAgentService : AgentService
     /// <inheritdoc />
     public override void VerifyAvailable() => VerifyAvailable(Executable);
 
-    /// <summary>Checks codex is installed and has an auth.json (best-effort login signal).</summary>
+    /// <summary>Checks the CLI and its login status, including OS credential-store authentication.</summary>
     public static void VerifyAvailable(string executable = Executable)
     {
         try
@@ -131,9 +131,16 @@ public sealed class CodexAgentService : AgentService
                 CreateNoWindow = true
             };
             using var proc = Process.Start(psi);
-            if (proc is null || !proc.WaitForExit(5_000) || proc.ExitCode != 0)
-                throw new InvalidOperationException(
-                    "codex is not installed. Install the Codex CLI from OpenAI and try again.");
+            if (proc is null) throw new InvalidOperationException("Could not start codex.");
+            var versionOutput = proc.StandardOutput.ReadToEndAsync();
+            var versionError = proc.StandardError.ReadToEndAsync();
+            if (!proc.WaitForExit(5_000))
+            {
+                proc.Kill(entireProcessTree: true);
+                throw new InvalidOperationException("codex version check timed out.");
+            }
+            Task.WhenAll(versionOutput, versionError).GetAwaiter().GetResult();
+            if (proc.ExitCode != 0) throw new InvalidOperationException("codex is not installed. Install the Codex CLI from OpenAI and try again.");
         }
         catch (InvalidOperationException)
         {
@@ -145,9 +152,18 @@ public sealed class CodexAgentService : AgentService
                 "Could not find `codex`. Install the Codex CLI from OpenAI and try again.");
         }
 
-        if (!File.Exists(Path.Combine(DefaultSessionRoot(), "auth.json")))
-            throw new InvalidOperationException(
-                "codex is not logged in. Run `codex login` and try again.");
+        using var login = Process.Start(new ProcessStartInfo(executable, "login status")
+        { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true });
+        if (login is null) throw new InvalidOperationException("Could not check codex login status.");
+        var output = login.StandardOutput.ReadToEndAsync();
+        var error = login.StandardError.ReadToEndAsync();
+        if (!login.WaitForExit(5_000))
+        {
+            login.Kill(entireProcessTree: true);
+            throw new InvalidOperationException("codex login status timed out.");
+        }
+        Task.WhenAll(output, error).GetAwaiter().GetResult();
+        if (login.ExitCode != 0) throw new InvalidOperationException("codex is not logged in. Run `codex login` and try again.");
     }
 
     // ── Turn worker ────────────────────────────────────────────────
@@ -200,11 +216,21 @@ public sealed class CodexAgentService : AgentService
         }
 
         psi.ArgumentList.Add("--json");
-        psi.ArgumentList.Add(sentence);
+        psi.ArgumentList.Add("--dangerously-bypass-approvals-and-sandbox");
+        var instructions = _launchOptions.ReadInstructions();
+        if (instructions.Length > 0)
+        {
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add("developer_instructions=" + JsonSerializer.Serialize(instructions));
+        }
+        psi.ArgumentList.Add("-");
+        var emitted = new HashSet<string>();
+        var started = new HashSet<string>();
+        var terminalReceived = false;
 
         await using var owned = OwnedAgentProcess.Start(psi, ct);
         var process = owned.Process;
-        process.StandardInput.Close();
+        var inputTask = WriteInputAsync(process, sentence, ct);
         _logger.LogDebug("→ {Executable}: {Text}", Executable, sentence);
 
         var stderrTask = ReadStderrAsync(process, writer, ct);
@@ -221,7 +247,8 @@ public sealed class CodexAgentService : AgentService
                 try
                 {
                     using var doc = JsonDocument.Parse(line);
-                    HandleEvent(doc.RootElement, writer);
+                    HandleEvent(doc.RootElement, writer, emitted, started);
+                    terminalReceived |= String(doc.RootElement, "type") is "turn.completed" or "turn.failed";
                 }
                 catch (JsonException)
                 {
@@ -229,9 +256,13 @@ public sealed class CodexAgentService : AgentService
                 }
             }
 
+            await inputTask;
             await process.WaitForExitAsync(ct);
             await stderrTask;
+            if (_sessionId is null) throw new InvalidOperationException("Codex did not provide a thread ID; refusing to start an unrelated conversation.");
 
+            if (process.ExitCode == 0 && !terminalReceived)
+                throw new InvalidOperationException("Codex exited without a terminal turn event.");
             if (process.ExitCode != 0 && !ct.IsCancellationRequested)
                 writer.TryWrite(new AgentEvent.Error($"{Executable} exited with code {process.ExitCode}"));
         }
@@ -239,7 +270,15 @@ public sealed class CodexAgentService : AgentService
         {
             await owned.StopAsync();
             await stderrTask;
+            try { await inputTask; }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException) { }
         }
+    }
+
+    private static async Task WriteInputAsync(Process process, string sentence, CancellationToken ct)
+    {
+        try { await process.StandardInput.WriteAsync(sentence.AsMemory(), ct); }
+        finally { process.StandardInput.Close(); }
     }
 
     private async Task ReadStderrAsync(Process process, ChannelWriter<AgentEvent> writer, CancellationToken ct)
@@ -261,57 +300,72 @@ public sealed class CodexAgentService : AgentService
         }
     }
 
-    private void HandleEvent(JsonElement root, ChannelWriter<AgentEvent> writer)
+    private static string? String(JsonElement element, string property) =>
+        element.ValueKind == JsonValueKind.Object && element.TryGetProperty(property, out var value)
+        && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+    private void HandleEvent(JsonElement root, ChannelWriter<AgentEvent> writer, HashSet<string> emitted, HashSet<string> started)
     {
-        var type = root.TryGetProperty("type", out var tp) ? tp.GetString() : null;
-
-        switch (type)
+        var type = String(root, "type");
+        if (type == "thread.started")
         {
-            case "session_meta":
-                if (_sessionId is null
-                    && root.TryGetProperty("payload", out var meta)
-                    && meta.TryGetProperty("id", out var id)
-                    && id.GetString() is { Length: > 0 } sessionId)
-                {
-                    _sessionId = sessionId;
-                }
-
-                break;
-
-            case "response_item":
-                EmitResponseItem(root, writer);
-                break;
+            if (String(root, "thread_id") is { Length: > 0 } threadId)
+            {
+                if (_sessionId is not null && _sessionId != threadId)
+                    throw new InvalidOperationException("Codex resumed a different thread than requested.");
+                _sessionId = threadId;
+            }
+            return;
+        }
+        if (type is "error" or "turn.failed")
+        {
+            var message = String(root, "message");
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("error", out var error)) message ??= String(error, "message");
+            writer.TryWrite(new AgentEvent.Error(message ?? "Codex turn failed."));
+            return;
+        }
+        if (type is not ("item.started" or "item.updated" or "item.completed")
+            || !root.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object) return;
+        var itemType = String(item, "type");
+        var id = String(item, "id") ?? item.GetRawText();
+        if (itemType == "agent_message")
+        {
+            if (type == "item.completed" && emitted.Add(id) && String(item, "text") is { Length: > 0 } text)
+                writer.TryWrite(new AgentEvent.AssistantText(text));
+            return;
+        }
+        if (itemType == "error")
+        {
+            if (type == "item.completed" && emitted.Add(id)) writer.TryWrite(new AgentEvent.Error(String(item, "message") ?? "Codex item failed."));
+            return;
+        }
+        if (itemType is not ("command_execution" or "file_change" or "mcp_tool_call" or "web_search")) return;
+        if (started.Add(id)) writer.TryWrite(new AgentEvent.ToolUse(itemType!, String(item, "command") ?? String(item, "tool") ?? String(item, "query") ?? item.GetRawText()));
+        if (type == "item.completed" && emitted.Add(id))
+        {
+            var failed = String(item, "status") == "failed"
+                || (item.TryGetProperty("exit_code", out var exit) && exit.ValueKind == JsonValueKind.Number && exit.TryGetInt32(out var code) && code != 0)
+                || (item.TryGetProperty("error", out var error) && error.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined));
+            writer.TryWrite(new AgentEvent.ToolResult(id, failed));
         }
     }
 
-    private static void EmitResponseItem(JsonElement root, ChannelWriter<AgentEvent> writer)
+    private static bool MatchesDirectory(string file, string? targetDirectory)
     {
-        if (!root.TryGetProperty("payload", out var payload))
-            return;
-
-        var itemType = payload.TryGetProperty("type", out var tp) ? tp.GetString() : null;
-        switch (itemType)
+        if (targetDirectory is null) return true;
+        try
         {
-            case "message":
+            foreach (var line in File.ReadLines(file))
             {
-                var role = payload.TryGetProperty("role", out var r) ? r.GetString() : null;
-                if (role == "assistant")
-                {
-                    var text = SessionJson.ExtractText(payload);
-                    if (!string.IsNullOrWhiteSpace(text))
-                        writer.TryWrite(new AgentEvent.AssistantText(text));
-                }
-
-                break;
-            }
-
-            case "function_call":
-            {
-                var name = payload.TryGetProperty("name", out var n) ? n.GetString() ?? "tool" : "tool";
-                writer.TryWrite(new AgentEvent.ToolUse(name, name));
-                break;
+                using var document = JsonDocument.Parse(line);
+                var root = document.RootElement;
+                if (String(root, "type") != "session_meta" || !root.TryGetProperty("payload", out var payload)) continue;
+                var cwd = String(payload, "cwd");
+                return cwd is null || string.Equals(Path.GetFullPath(cwd).TrimEnd(Path.DirectorySeparatorChar), Path.GetFullPath(targetDirectory).TrimEnd(Path.DirectorySeparatorChar), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
             }
         }
+        catch (Exception ex) when (ex is IOException or JsonException or ArgumentException) { }
+        return true;
     }
 
     private string? ResolveSessionFile()
@@ -321,9 +375,9 @@ public sealed class CodexAgentService : AgentService
             return null;
 
         var files = Directory.GetFiles(dir, "rollout-*.jsonl", SearchOption.AllDirectories);
-        if (_resumeSessionId is { } id)
+        if (_sessionId is { } id)
             return files.FirstOrDefault(f => f.Contains(id));
 
-        return files.OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
+        return null;
     }
 }

@@ -130,6 +130,9 @@ public class AgentLifecycleTests
                 else { completed = true; lifetime.Cancel(); }
             }
             if (backend == "claude" && evt is AgentEvent.Error) completed = true;
+            // The deliberately non-protocol flood can fail a turn. It must still
+            // finish and close or become ready, rather than deadlocking its pipes.
+            if (evt is AgentEvent.TurnComplete) completed = true;
         }
         Assert.False(timeout.IsCancellationRequested);
         Assert.True(completed);

@@ -305,7 +305,11 @@ async Task<int> Run(LogFileWriter? logFile)
     services.AddSingleton(stored);
     services.AddSingleton<Display>();
     services.AddSingleton<MicLevelMonitor>();
-    services.AddSingleton<AudioSourceFactory>();
+    services.AddSingleton(sp => new AudioSourceFactory(
+        sp.GetRequiredService<ILoggerFactory>(),
+        sp.GetRequiredService<Display>(),
+        sp.GetRequiredService<MicLevelMonitor>(),
+        cliArgs.SelectMicrophone));
     services.AddSingleton<WhisperModelSpec>(whisperSpec); // resolved above: defaults < config < flags
     services.AddSingleton<LocalSttModels>();
     services.AddSingleton<LocalTranscriptionService>();

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using NAudio.Wave;
 using Spectre.Console;
+using Sancho.Console.Config;
 
 namespace Sancho.Console.Audio;
 
@@ -13,16 +14,22 @@ namespace Sancho.Console.Audio;
 public sealed class AudioSourceFactory(
     ILoggerFactory loggerFactory,
     Display display,
-    MicLevelMonitor micMonitor)
+    MicLevelMonitor micMonitor,
+    bool selectMicrophone = false)
 {
     public IAudioSource Create()
+        => ResolveMicrophone(selectMicrophone).CreateSource();
+
+    /// <summary>Enumerate fresh devices. Recovery sets allowPrompt=false and never alters saved priority.</summary>
+    public AudioSourceSelection ResolveMicrophone(bool forceSelection = false, bool allowPrompt = true,
+        IReadOnlySet<string>? excludedIdentities = null)
     {
         if (OperatingSystem.IsWindows())
-            return CreateWindowsSource();
+            return ResolveWindowsSource(forceSelection, allowPrompt, excludedIdentities);
         if (OperatingSystem.IsMacOS())
-            return CreateMacOsSource();
+            return ResolveMacOsSource(forceSelection, allowPrompt, excludedIdentities);
         if (OperatingSystem.IsLinux())
-            return CreateLinuxSource();
+            return ResolveLinuxSource(forceSelection, allowPrompt, excludedIdentities);
 
         throw new PlatformNotSupportedException("Audio capture is not supported on this platform.");
     }
@@ -49,85 +56,81 @@ public sealed class AudioSourceFactory(
             "Meeting mode system audio capture is supported on Windows and Linux; macOS requires a virtual audio device and is not supported yet.");
     }
 
-    private IAudioSource CreateWindowsSource()
+    private AudioSourceSelection ResolveWindowsSource(bool forceSelection, bool allowPrompt, IReadOnlySet<string>? excludedIdentities)
     {
         var count = WaveInEvent.DeviceCount;
-
-        if (count == 0)
-            throw new InvalidOperationException(
-                "No recording devices found. Plug in a microphone and try again.");
-
-        int selected;
-
-        if (count == 1)
-        {
-            selected = 0;
-        }
-        else
-        {
-            var choices = Enumerable.Range(0, count)
-                .Select(i => WaveInEvent.GetCapabilities(i).ProductName)
-                .ToList();
-
-            var prompt = new SelectionPrompt<int>()
-                .Title("🎤 Multiple microphones found. Select one:")
-                .AddChoices(choices.Select((_, i) => i));
-
-            prompt.UseConverter(i => choices[i]);
-
-            selected = AnsiConsole.Prompt(prompt);
-        }
-
-        var deviceName = WaveInEvent.GetCapabilities(selected).ProductName;
-
-        return new MicrophoneAudioSource(selected, deviceName,
-            loggerFactory.CreateLogger<MicrophoneAudioSource>(),
-            display, micMonitor);
+        var devices = Enumerable.Range(0, count).Select(index => (Index: index, Capabilities: WaveInEvent.GetCapabilities(index)))
+            .Where(device => excludedIdentities?.Contains(WindowsIdentity(device.Capabilities)) != true).ToArray();
+        // WaveIn does not expose endpoint GUIDs. Avoid volatile device indexes:
+        // product/manufacturer/channels is the best identity its API provides.
+        var ids = devices.Select(d => WindowsIdentity(d.Capabilities)).ToArray();
+        var selected = Select(ids, devices.Select(d => d.Capabilities.ProductName).ToArray(), forceSelection, allowPrompt);
+        var deviceName = devices[selected].Capabilities.ProductName;
+        return new(ids[selected], deviceName, () => new MicrophoneAudioSource(devices[selected].Index, deviceName,
+            loggerFactory.CreateLogger<MicrophoneAudioSource>(), display, micMonitor));
     }
 
-    private IAudioSource CreateMacOsSource()
+    private AudioSourceSelection ResolveMacOsSource(bool forceSelection, bool allowPrompt, IReadOnlySet<string>? excludedIdentities)
     {
-        var devices = FfmpegDevices.ListAvFoundationAudioDevices();
-        var device = PickDevice(devices);
-        return new FfmpegAudioSource(
+        var devices = FfmpegDevices.ListAvFoundationAudioDevices()
+            .Where(device => excludedIdentities?.Contains("macos:" + Uri.EscapeDataString(device.Name)) != true).ToArray();
+        var ids = devices.Select(d => "macos:" + Uri.EscapeDataString(d.Name)).ToArray();
+        var selected = Select(ids, devices.Select(d => d.Name).ToArray(), forceSelection, allowPrompt);
+        var device = devices[selected];
+        return new(ids[selected], device.Name, () => new FfmpegAudioSource(
             $"Using device [{device.Index}]: {device.Name}",
             ["-f", "avfoundation", "-i", $":{device.Index}"],
             fallbackInputArgs: null,
             loggerFactory.CreateLogger<FfmpegAudioSource>(),
-            display, micMonitor);
+            display, micMonitor));
     }
 
-    private IAudioSource CreateLinuxSource()
+    private AudioSourceSelection ResolveLinuxSource(bool forceSelection, bool allowPrompt, IReadOnlySet<string>? excludedIdentities)
     {
-        var choice = LinuxAudioDevices.SelectMicrophone(LinuxAudioDevices.Discover(), devices =>
+        var sources = LinuxAudioDevices.Discover();
+        if (sources is null)
         {
-            var prompt = new SelectionPrompt<int>()
-                .Title("🎤 Multiple microphones found. Select one:")
-                .AddChoices(Enumerable.Range(0, devices.Count));
-            prompt.UseConverter(index => Markup.Escape($"{devices[index].Description} ({devices[index].Name})"));
-            return AnsiConsole.Prompt(prompt);
+            if (forceSelection) throw new InvalidOperationException("Microphone selection requires pactl and a running PulseAudio/PipeWire server. Install pulseaudio-utils and try again.");
+            if (excludedIdentities?.Contains("linux:default") == true)
+                throw new InvalidOperationException("Default microphone is temporarily unavailable.");
+            var fallback = LinuxAudioDevices.SelectMicrophone(null, _ => 0);
+            return new("linux:default", fallback.Description, () => CreateFfmpeg(fallback));
+        }
+        var devices = sources.Where(source => !source.IsMonitor && excludedIdentities?.Contains(LinuxIdentity(source)) != true).ToArray();
+        var ids = devices.Select(LinuxIdentity).ToArray();
+        var selected = Select(ids, devices.Select(d => $"{d.Description} ({d.Name})").ToArray(), forceSelection, allowPrompt);
+        var device = devices[selected];
+        return new(ids[selected], device.Description, () =>
+        {
+            // Activate an analog port only when capture starts, not while polling availability.
+            var choice = LinuxAudioDevices.SelectMicrophone([device], _ => 0);
+            return CreateFfmpeg(choice);
         });
-        return new FfmpegAudioSource(
-            choice.Description, choice.InputArguments, choice.FallbackArguments,
-            loggerFactory.CreateLogger<FfmpegAudioSource>(),
-            display, micMonitor);
     }
 
-    private static FfmpegDevices.Device PickDevice(IReadOnlyList<FfmpegDevices.Device> devices)
+    private FfmpegAudioSource CreateFfmpeg(LinuxAudioDevices.CaptureChoice choice) =>
+        new(choice.Description, choice.InputArguments, choice.FallbackArguments,
+            loggerFactory.CreateLogger<FfmpegAudioSource>(), display, micMonitor);
+
+    private static string WindowsIdentity(WaveInCapabilities device) =>
+        $"windows:{Uri.EscapeDataString(device.ProductName)}:{device.ManufacturerGuid}:{device.Channels}";
+
+    private static string LinuxIdentity(LinuxAudioDevices.Source source) =>
+        $"linux:{Uri.EscapeDataString(source.Name)}:{Uri.EscapeDataString(source.Port ?? "")}";
+
+    private static int Select(string[] ids, string[] descriptions, bool forceSelection, bool allowPrompt)
     {
-        if (devices.Count == 0)
-            throw new InvalidOperationException(
-                "No recording devices found. Plug in a microphone and try again.");
-
-        if (devices.Count == 1)
-            return devices[0];
-
-        var prompt = new SelectionPrompt<int>()
-            .Title("🎤 Multiple microphones found. Select one:")
-            .AddChoices(devices.Select((_, i) => i));
-
-        prompt.UseConverter(i => devices[i].Name);
-
-        return devices[AnsiConsole.Prompt(prompt)];
+        var config = ConfigStore.Load();
+        var selected = MicrophonePreferences.Choose(ids, config.MicrophonePriority,
+            forceSelection, allowPrompt, () =>
+            {
+                var prompt = new SelectionPrompt<int>()
+                    .Title("🎤 Select a microphone:")
+                    .AddChoices(Enumerable.Range(0, ids.Length));
+                prompt.UseConverter(index => Markup.Escape(descriptions[index]));
+                return AnsiConsole.Prompt(prompt);
+            }, out var remember);
+        if (remember) ConfigStore.RememberMicrophone(ids[selected]);
+        return selected;
     }
 }

@@ -14,7 +14,8 @@ public sealed record CliArgs(
     bool ShowVersion,
     bool Log,
     bool Notes,
-    bool Meeting)
+    bool Meeting,
+    bool SelectMicrophone = false)
 {
     /// <summary>
     /// Parses the command line: <c>-c</c>, <c>--log</c>, <c>--notes</c>,
@@ -29,6 +30,7 @@ public sealed record CliArgs(
         var log = false;
         var notes = false;
         var meeting = false;
+        var selectMicrophone = false;
         var positional = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
@@ -51,6 +53,9 @@ public sealed record CliArgs(
                     break;
                 case "--meeting":
                     meeting = true;
+                    break;
+                case "--select-microphone":
+                    selectMicrophone = true;
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -81,10 +86,10 @@ public sealed record CliArgs(
         {
             if (positional[0] is not "config")
                 throw new UsageError($"Unknown command '{positional[0]}'.");
-            return new CliArgs(continueSession, agent, model, "config", positional.Skip(1).ToArray(), false, false, log, notes, meeting);
+            return new CliArgs(continueSession, agent, model, "config", positional.Skip(1).ToArray(), false, false, log, notes, meeting, selectMicrophone);
         }
 
-        return new CliArgs(continueSession, agent, model, null, [], false, false, log, notes, meeting);
+        return new CliArgs(continueSession, agent, model, null, [], false, false, log, notes, meeting, selectMicrophone);
     }
 
     /// <summary>

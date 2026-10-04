@@ -24,6 +24,7 @@ public static class HelpText
                                            (auto-detected from your PATH when not configured)
                                            dummy echoes speech locally; choose it explicitly; no account needed
           --model <size>                   Whisper model size: tiny, base, small (default) or medium
+          --select-microphone               Choose a microphone and remember it as your first preference
           --meeting                        Transcribe your mic + the system output (other meeting
                                            participants) — lines labeled Me/Others; Windows or Linux
                                            Linux needs PulseAudio/PipeWire and pactl (pulseaudio-utils)

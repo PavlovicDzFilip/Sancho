@@ -44,6 +44,13 @@ public static class ConfigStore
         File.Move(tmp, path, overwrite: true);
     }
 
+    /// <summary>Persist only an explicit microphone selection, preserving agent/model settings.</summary>
+    public static void RememberMicrophone(string identity)
+    {
+        var config = Load();
+        Save(config with { MicrophonePriority = Audio.MicrophonePreferences.Promote(config.MicrophonePriority, identity) });
+    }
+
     /// <summary>Returns a copy of <paramref name="config"/> with one key set.</summary>
     /// <remarks>An empty value clears the key (stores <c>null</c>).</remarks>
     public static SanchoConfig WithKey(SanchoConfig config, string key, string? value) => key switch

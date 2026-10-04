@@ -83,13 +83,26 @@ public sealed class Orchestrator(
         }
         using var loopbackOwnership = loopback as IDisposable;
 
-        if (NotesMode)
+        var sessionStarted = DateTimeOffset.Now;
+        var notesPath = NotesMode || MeetingMode
+            ? MeetingTranscript.FilePath(Directory.GetCurrentDirectory(), NotesMode, sessionStarted)
+            : null;
+        // Own the writer across setup as well as capture: a failed header or
+        // later startup step must release the file before this method exits.
+        using var notesOwnership = notesPath is null
+            ? null
+            : new StreamWriter(notesPath, append: true, Encoding.UTF8) { AutoFlush = true };
+        _notes = notesOwnership;
+        if (notesOwnership is not null)
         {
-            var notesPath = Path.Combine(Directory.GetCurrentDirectory(),
-                $"sancho-notes-{DateTime.Now:yyyy-MM-dd}.md");
-            _notes = new StreamWriter(notesPath, append: true, Encoding.UTF8) { AutoFlush = true };
+            if (MeetingMode)
+            {
+                notesOwnership.WriteLine();
+                notesOwnership.WriteLine(MeetingTranscript.SessionHeader(sessionStarted));
+                notesOwnership.WriteLine();
+            }
             display.History.AppendLine(
-                $"📝 Transcribing to {Path.GetFileName(notesPath)} — the assistant is not involved.");
+                $"📝 Transcribing to {Path.GetFileName(notesPath)}{(NotesMode ? " — the assistant is not involved." : ".")}");
             display.History.AppendLine("   Speak naturally. Press CTRL + C to stop.");
         }
         else
@@ -188,7 +201,6 @@ public sealed class Orchestrator(
         finally
         {
             System.Console.CancelKeyPress -= OnCancelKeyPress;
-            _notes?.Dispose();
         }
 
         display.History.AppendLine("✅ Done.");
@@ -313,6 +325,9 @@ public sealed class Orchestrator(
         // can never be interrupted and Ctrl+C hangs in Task.WhenAll.
         await foreach (var evt in events.WithCancellation(ct))
         {
+            // Timestamp receipt before displaying or dispatching speech to the assistant.
+            // This is decode completion time, not the start of the recorded utterance.
+            var receivedAt = DateTimeOffset.Now;
             switch (evt)
             {
                 case TranscriptionEvent.Delta delta:
@@ -327,10 +342,17 @@ public sealed class Orchestrator(
                     if (!string.IsNullOrWhiteSpace(sentence))
                     {
                         if (MeetingMode)
+                        {
+                            var meetingLine = MeetingTranscript.FormatLine(receivedAt, completed.FromMic, sentence);
+                            AppendNote(meetingLine);
+                            display.History.AppendLine($"💬 {meetingLine}");
                             sentence = (completed.FromMic ? "Me: " : "Others: ") + sentence;
+                        }
 
                         if (NotesMode)
-                            AppendNote(sentence);
+                        {
+                            if (!MeetingMode) AppendNote(sentence);
+                        }
                         else
                         {
                             _inputQueue.Add(sentence);
@@ -386,8 +408,8 @@ public sealed class Orchestrator(
     }
 
     /// <summary>
-    /// Appends one transcribed utterance to the notes file (<c>--notes</c>
-    /// mode). One line per utterance; failures warn but never kill the run.
+    /// Appends one transcribed utterance to the notes or meeting file.
+    /// One line per utterance; failures warn but never kill the run.
     /// </summary>
     private void AppendNote(string text)
     {
@@ -498,8 +520,9 @@ public sealed class Orchestrator(
         {
             var combined = _inputQueue.TrySend(agentService!.Send);
             if (combined is null) return;
-            foreach (var line in combined.Split(Environment.NewLine))
-                display.History.AppendLine($"💬 {line}");
+            if (!MeetingMode)
+                foreach (var line in combined.Split(Environment.NewLine))
+                    display.History.AppendLine($"💬 {line}");
             UpdateTranscript();
         }
         catch (InvalidOperationException ex)

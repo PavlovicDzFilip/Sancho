@@ -53,6 +53,7 @@ public sealed class Orchestrator(
     {
         display.Start();
         var audioSource = audioSourceFactory.Create();
+        using var audioSourceOwnership = audioSource as IDisposable;
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var channel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(
@@ -66,7 +67,6 @@ public sealed class Orchestrator(
         // Separate from cts so a transcription failure can stop the mic
         // independently, but linked to it so shutdown cancels capture too.
         using var captureCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
-        var captureTask = audioSource.CaptureAsync(channel.Writer, captureCts.Token);
 
         IAudioSource? loopback = null;
         Channel<byte[]>? loopbackChannel = null;
@@ -81,6 +81,7 @@ public sealed class Orchestrator(
                 SingleReader = true,
             });
         }
+        using var loopbackOwnership = loopback as IDisposable;
 
         if (NotesMode)
         {
@@ -123,6 +124,9 @@ public sealed class Orchestrator(
                 Display.HistoryColor.Warn);
         }
 
+        // Resolve both sources and finish setup before starting either capture.
+        // Missing loopback support must not leave an already-running microphone.
+        var captureTask = audioSource.CaptureAsync(channel.Writer, captureCts.Token);
         var loopbackTask = loopback is null
             ? null
             : loopback.CaptureAsync(loopbackChannel!.Writer, captureCts.Token);
@@ -184,7 +188,6 @@ public sealed class Orchestrator(
         finally
         {
             System.Console.CancelKeyPress -= OnCancelKeyPress;
-            (loopback as IDisposable)?.Dispose();
             _notes?.Dispose();
         }
 

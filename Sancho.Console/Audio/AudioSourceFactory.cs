@@ -29,16 +29,24 @@ public sealed class AudioSourceFactory(
 
     /// <summary>
     /// Creates the loopback source capturing the system audio output (other
-    /// meeting participants). Windows-only for now — Linux pulse monitors and
-    /// macOS virtual devices are future work.
+    /// meeting participants), using WASAPI on Windows or the default output's
+    /// PulseAudio/PipeWire monitor on Linux.
     /// </summary>
     public IAudioSource CreateLoopback()
     {
         if (OperatingSystem.IsWindows())
             return new LoopbackAudioSource(loggerFactory.CreateLogger<LoopbackAudioSource>(), display);
 
+        if (OperatingSystem.IsLinux())
+        {
+            var monitor = LinuxLoopbackDevices.ResolveDefaultSinkMonitor();
+            return new FfmpegAudioSource($"System output: {monitor}",
+                ["-f", "pulse", "-i", monitor], fallbackInputArgs: null,
+                loggerFactory.CreateLogger<FfmpegAudioSource>(), display, micMonitor: null);
+        }
+
         throw new PlatformNotSupportedException(
-            "Loopback capture is Windows-only for now — Linux/macOS coming later.");
+            "Meeting mode system audio capture is supported on Windows and Linux; macOS requires a virtual audio device and is not supported yet.");
     }
 
     private IAudioSource CreateWindowsSource()
@@ -94,7 +102,7 @@ public sealed class AudioSourceFactory(
         var choice = LinuxAudioDevices.SelectMicrophone(LinuxAudioDevices.Discover(), devices =>
         {
             var prompt = new SelectionPrompt<int>()
-                .Title("ðŸŽ¤ Multiple microphones found. Select one:")
+                .Title("🎤 Multiple microphones found. Select one:")
                 .AddChoices(Enumerable.Range(0, devices.Count));
             prompt.UseConverter(index => Markup.Escape($"{devices[index].Description} ({devices[index].Name})"));
             return AnsiConsole.Prompt(prompt);

@@ -24,7 +24,8 @@ public static class HelpText
                                           dummy echoes speech locally; no CLI or account needed
           --model <size>                   Whisper model size: tiny, base, small (default) or medium
           --meeting                        Transcribe your mic + the system output (other meeting
-                                           participants) — lines labeled Me/Others; Windows only
+                                           participants) — lines labeled Me/Others; Windows or Linux
+                                           Linux needs PulseAudio/PipeWire and pactl (pulseaudio-utils)
           --notes                          Transcribe to sancho-notes-YYYY-MM-DD.md in the current
                                            directory — Claude is not involved
           --log                            Write a run log (console mirror + debug diagnostics + agent I/O)

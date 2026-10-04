@@ -22,7 +22,7 @@ public sealed class FfmpegAudioSource : IAudioSource, IDisposable
     private readonly string[]? _fallbackInputArgs;
     private readonly ILogger<FfmpegAudioSource> _logger;
     private readonly Display _display;
-    private readonly MicLevelMonitor _micMonitor;
+    private readonly MicLevelMonitor? _micMonitor;
 
     private Process? _process;
     private Task? _stderrTask;
@@ -33,7 +33,7 @@ public sealed class FfmpegAudioSource : IAudioSource, IDisposable
         string[]? fallbackInputArgs,
         ILogger<FfmpegAudioSource> logger,
         Display display,
-        MicLevelMonitor micMonitor)
+        MicLevelMonitor? micMonitor)
     {
         _deviceDescription = deviceDescription;
         _inputArgs = inputArgs;
@@ -104,7 +104,7 @@ public sealed class FfmpegAudioSource : IAudioSource, IDisposable
 
             if (!captured)
                 _logger.LogError(
-                    "ffmpeg capture failed. Check that ffmpeg is installed and the microphone is available.");
+                    "ffmpeg capture failed. Check that ffmpeg is installed and the selected audio source is available.");
         }
         catch (OperationCanceledException)
         {
@@ -195,7 +195,7 @@ public sealed class FfmpegAudioSource : IAudioSource, IDisposable
 
             var chunk = new byte[read];
             Buffer.BlockCopy(buffer, 0, chunk, 0, read);
-            _micMonitor.Update(chunk);
+            _micMonitor?.Update(chunk);
 
             // TryWrite keeps the capture thread non-blocking, matching the
             // behaviour when the channel is full.

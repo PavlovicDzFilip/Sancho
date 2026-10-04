@@ -151,9 +151,9 @@ static IReadOnlyList<AgentService.SessionSummary> ListAgentSessions(string agent
 
 async Task<int> Run(LogFileWriter? logFile)
 {
-    if (cliArgs.Meeting && !OperatingSystem.IsWindows())
+    if (cliArgs.Meeting && !OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
     {
-        AnsiConsole.MarkupLine("[red]--meeting is Windows-only for now (loopback capture); Linux/macOS coming later.[/]");
+        AnsiConsole.MarkupLine("[red]--meeting supports Windows and Linux (PulseAudio/PipeWire). macOS system audio capture is not supported yet.[/]");
         return 2;
     }
 

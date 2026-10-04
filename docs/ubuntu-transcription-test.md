@@ -49,7 +49,7 @@ Recognized utterances are appended to `sancho-notes-YYYY-MM-DD.md` in the curren
 
 Send the Ubuntu version (`cat /etc/os-release`), architecture (`uname -m`), the command used, the visible error, and the relevant portion of `~/.sancho/sancho.log`. The log contains recognized speech; review it before sharing. `SANCHO_CONFIG_DIR` can change the log directory.
 
-Linux capture first uses the default PulseAudio/PipeWire microphone, with an ALSA fallback. Check the default input and mute state in Sound settings. If Sancho reports a clipped built-in microphone on an AMD Ryzen AI 300 laptop, try a USB or 3.5 mm headset microphone.
+Linux capture first uses the default PulseAudio/PipeWire microphone, with an ALSA fallback. Check the default input and mute state in Sound settings. If Sancho reports repeated full-scale microphone samples, lower the input volume in Sound settings or try another microphone. The warning is based on the audio signal and does not identify a CPU or driver. A high average volume alone does not count as clipping.
 
 The deterministic regression suite can also be run with:
 

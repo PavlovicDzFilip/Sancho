@@ -12,13 +12,13 @@ public sealed class MicLevelMonitor
     /// <summary>Peak below this counts as silence (about -48 dBFS).</summary>
     private const double SilenceThreshold = 0.004;
 
-    /// <summary>Mean-abs level at/above this counts as clipped (~-14 dB mean).</summary>
-    /// <remarks>
-    /// Uses mean-abs rather than peak: a broken capture stage (e.g. the AMD ACP
-    /// DMIC bug) fills most samples near full scale, while real speech averages
-    /// far lower and decays during pauses.
-    /// </remarks>
-    private const double ClippedMeanThreshold = 0.2;
+    // A loud mean level alone is not clipping. At least 1% of samples
+    // must reach 99.9% of the PCM rail in every chunk for ten seconds.
+    private const double RailSampleThreshold = 0.999;
+    private const double ClippedSampleFraction = 0.01;
+    // Capture normally updates every 100 ms. Missing chunks must not turn
+    // one transient peak into a sustained clipping warning.
+    private const long MaximumClipUpdateGapMilliseconds = 1_000;
 
     /// <summary>Silence must persist this long before it is reported.</summary>
     private static readonly TimeSpan SilenceWarnDelay = TimeSpan.FromSeconds(3);
@@ -33,7 +33,9 @@ public sealed class MicLevelMonitor
     private long _levelBits;
     private long _meanLevelBits;
     private long _silentSince = -1;
+    private readonly object _clipGate = new();
     private long _clippedSince = -1;
+    private long _lastClippedUpdate = -1;
     private int _seenSignal;
 
     /// <summary>Allows tests to inject a fake clock; defaults to the system tick counter.</summary>
@@ -68,16 +70,19 @@ public sealed class MicLevelMonitor
     }
 
     /// <summary>
-    /// True when the signal has been pinned near full scale for a while —
-    /// idle room audio does not sit at 0 dB, so this means clipping or a
-    /// broken capture stage (e.g. the known AMD ACP DMIC driver bug).
+    /// True after ten seconds of continuously observed near-rail samples.
+    /// This identifies digital clipping, without diagnosing hardware causes.
     /// </summary>
     public bool IsClipped
     {
         get
         {
-            var since = Interlocked.Read(ref _clippedSince);
-            return since >= 0 && _clock() - since > ClippedWarnDelay.TotalMilliseconds;
+            lock (_clipGate)
+            {
+                var now = _clock();
+                return _clippedSince >= 0 && now - _clippedSince > ClippedWarnDelay.TotalMilliseconds
+                    && now - _lastClippedUpdate <= MaximumClipUpdateGapMilliseconds;
+            }
         }
     }
 
@@ -87,12 +92,14 @@ public sealed class MicLevelMonitor
         var peak = 0d;
         var sum = 0d;
         var count = 0;
+        var railSamples = 0;
         for (var i = 0; i + 1 < chunk.Length; i += 2)
         {
             // Cast through int: Math.Abs(short.MinValue) throws OverflowException,
             // and full-scale negative samples (-32768) do occur on digital mics.
             var sample = Math.Abs((int)(short)(chunk[i] | chunk[i + 1] << 8)) / 32768d;
             sum += sample;
+            if (sample >= RailSampleThreshold) railSamples++;
             count++;
             if (sample > peak)
                 peak = sample;
@@ -118,14 +125,21 @@ public sealed class MicLevelMonitor
             Volatile.Write(ref _seenSignal, 1);
         }
 
-        if (MeanLevel >= ClippedMeanThreshold)
+        // Keep the streak start and latest sample time coherent for the UI.
+        lock (_clipGate)
         {
-            if (Interlocked.Read(ref _clippedSince) < 0)
-                Interlocked.Exchange(ref _clippedSince, _clock());
-        }
-        else
-        {
-            Interlocked.Exchange(ref _clippedSince, -1);
+            if (count > 0 && (double)railSamples / count >= ClippedSampleFraction)
+            {
+                var now = _clock();
+                if (_clippedSince < 0 || now - _lastClippedUpdate > MaximumClipUpdateGapMilliseconds)
+                    _clippedSince = now;
+                _lastClippedUpdate = now;
+            }
+            else
+            {
+                _clippedSince = -1;
+                _lastClippedUpdate = -1;
+            }
         }
     }
 }

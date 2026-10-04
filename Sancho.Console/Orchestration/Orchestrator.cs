@@ -426,12 +426,11 @@ public sealed class Orchestrator(
 
         if (clipped && !_clipWarned)
         {
-            // One-time warning per clipping episode. A signal pinned at full
-            // scale is not idle room audio — it is clipping or a broken
-            // capture stage (known: AMD ACP DMIC driver bug on Ryzen AI 300).
+            // One-time warning per observed clipping episode. The signal
+            // alone cannot identify the microphone or hardware cause.
             _clipWarned = true;
             display.History.AppendLine(
-                "⚠ Microphone signal is pinned at full scale (clipped) — on Ryzen AI 300 laptops this is the known broken AMD ACP DMIC driver. Use a USB or 3.5mm headset mic and restart sancho.",
+                "⚠ Microphone samples have repeatedly reached full scale (clipping). Lower the input volume or select another microphone.",
                 Display.HistoryColor.Warn);
         }
         else if (!clipped)

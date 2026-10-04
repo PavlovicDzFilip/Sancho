@@ -82,21 +82,74 @@ public class MicLevelMonitorTests
         var (m, advance) = FakeClock();
 
         m.Update(SignalChunk(short.MaxValue));
-        advance(9_999);
+        for (var i = 0; i < 99; i++) { advance(100); m.Update(SignalChunk(short.MaxValue)); }
+        advance(99);
+        m.Update(SignalChunk(short.MaxValue));
         Assert.False(m.IsClipped);
 
         advance(2);
+        m.Update(SignalChunk(short.MaxValue));
         Assert.True(m.IsClipped);
     }
 
     [Fact]
-    public void ModerateSpeech_DoesNotClip()
+    public void LoudSignalWithoutRailSamples_DoesNotClip()
     {
         var (m, advance) = FakeClock();
 
-        m.Update(SignalChunk(6_000)); // mean-abs 0.183 — below the 0.2 clip threshold
-        advance(11_000);
+        m.Update(SignalChunk(28_000)); // high mean and peak, but no rail samples
+        for (var i = 0; i < 110; i++)
+        {
+            advance(100);
+            m.Update(SignalChunk(28_000));
+            Assert.False(m.IsClipped);
+        }
 
+        Assert.False(m.IsClipped);
+        Assert.True(m.MeanLevel > 0.8);
+    }
+
+    [Fact]
+    public void RailFractionMustReachOnePercentAndRecoverImmediately()
+    {
+        var (m, advance) = FakeClock();
+        var chunk = SignalChunk(25_000);
+        for (var i = 0; i < 24; i++) { chunk[i * 2] = 0; chunk[i * 2 + 1] = 128; } // -32768
+        m.Update(chunk);
+        for (var i = 0; i < 101; i++) { advance(100); m.Update(chunk); }
+        Assert.True(m.IsClipped);
+        chunk[0] = 0; chunk[1] = 0; // 23/2400 falls below 1%
+        m.Update(chunk);
+        Assert.False(m.IsClipped);
+        Assert.True(m.MeanLevel > 0.7); // smoothed loudness cannot keep warning latched
+    }
+
+    [Fact]
+    public void TransientRailsAndCaptureGapsCannotAccumulateTenSeconds()
+    {
+        var (m, advance) = FakeClock();
+        m.Update(SignalChunk(short.MinValue));
+        advance(11_000);
+        Assert.False(m.IsClipped); // no more observed samples
+        m.Update(SignalChunk(short.MinValue));
+        Assert.False(m.IsClipped); // fresh streak after gap
+        for (var i = 0; i < 50; i++) { advance(100); m.Update(SignalChunk(short.MinValue)); }
+        m.Update(SilenceChunk());
+        Assert.False(m.IsClipped);
+        for (var i = 0; i < 50; i++) { advance(100); m.Update(SignalChunk(short.MinValue)); }
+        Assert.False(m.IsClipped); // silence interrupted the previous streak
+    }
+
+    [Fact]
+    public void EmptyOddAndNegativeRailChunksAreSafe()
+    {
+        var (m, advance) = FakeClock();
+        m.Update([0, 128]); // short.MinValue must not overflow Math.Abs
+        Assert.Equal(1, m.Level);
+        advance(100);
+        m.Update([]);
+        m.Update([128]); // dangling byte is not a PCM sample
+        advance(11_000);
         Assert.False(m.IsClipped);
     }
 

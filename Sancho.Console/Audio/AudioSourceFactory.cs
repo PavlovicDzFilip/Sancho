@@ -91,12 +91,16 @@ public sealed class AudioSourceFactory(
 
     private IAudioSource CreateLinuxSource()
     {
-        // No device picker on Linux: capture the default device via pulse
-        // (PulseAudio/PipeWire), falling back to ALSA for minimal installs.
+        var choice = LinuxAudioDevices.SelectMicrophone(LinuxAudioDevices.Discover(), devices =>
+        {
+            var prompt = new SelectionPrompt<int>()
+                .Title("ðŸŽ¤ Multiple microphones found. Select one:")
+                .AddChoices(Enumerable.Range(0, devices.Count));
+            prompt.UseConverter(index => Markup.Escape($"{devices[index].Description} ({devices[index].Name})"));
+            return AnsiConsole.Prompt(prompt);
+        });
         return new FfmpegAudioSource(
-            "Capturing from default microphone (pulse, ALSA fallback)",
-            ["-f", "pulse", "-i", "default"],
-            ["-f", "alsa", "-i", "default"],
+            choice.Description, choice.InputArguments, choice.FallbackArguments,
             loggerFactory.CreateLogger<FfmpegAudioSource>(),
             display, micMonitor);
     }

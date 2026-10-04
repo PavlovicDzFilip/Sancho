@@ -73,9 +73,8 @@ public class AgentLifecycleTests
             Assert.IsType<AgentEvent.Ready>(stream.Current);
             agent.Send("first");
             Assert.Throws<InvalidOperationException>(() => agent.Send("duplicate"));
-            while (!File.Exists(childPidFile)) await Task.Delay(20, timeout.Token);
-            var pid = int.Parse(await File.ReadAllTextAsync(pidFile, timeout.Token));
-            var childPid = int.Parse(await File.ReadAllTextAsync(childPidFile, timeout.Token));
+            var pid = await ReadPublishedPidAsync(pidFile, timeout.Token);
+            var childPid = await ReadPublishedPidAsync(childPidFile, timeout.Token);
             if (!disposeEarly) lifetime.Cancel();
             await stream.DisposeAsync().AsTask().WaitAsync(timeout.Token);
             Assert.False(IsRunning(pid));
@@ -176,6 +175,24 @@ public class AgentLifecycleTests
             Assert.IsType<AgentEvent.Error>(events.Last());
         }
         finally { File.Delete(script); }
+    }
+
+    private static async Task<int> ReadPublishedPidAsync(string path, CancellationToken ct)
+    {
+        // File creation precedes completion of the asynchronous write. Wait for
+        // the published PID, not merely the directory entry, before cancelling.
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (File.Exists(path)
+                    && int.TryParse(await File.ReadAllTextAsync(path, ct), out var pid) && pid > 0)
+                    return pid;
+            }
+            catch (IOException) { } // The writer can briefly hold an exclusive file handle.
+            await Task.Delay(20, ct);
+        }
     }
 
     private static bool IsRunning(int pid)

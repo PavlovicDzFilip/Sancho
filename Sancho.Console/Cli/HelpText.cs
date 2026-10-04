@@ -11,7 +11,7 @@ public static class HelpText
 
     /// <summary>Body shown by <c>--help</c>.</summary>
     public const string Body = """
-        Sancho — voice assistant: microphone → transcription → Claude CLI.
+        Sancho — voice assistant: microphone → transcription → your chosen agent.
 
         Usage:
           sancho                          Start listening in the current directory
@@ -24,12 +24,14 @@ public static class HelpText
                                            (auto-detected from your PATH when not configured)
                                            dummy echoes speech locally; choose it explicitly; no account needed
           --model <size>                   Whisper model size: tiny, base, small (default) or medium
-          --select-microphone               Choose a microphone and remember it as your first preference
+          --select-microphone              Choose a microphone and remember it as your first preference
           --meeting                        Transcribe your mic + the system output (other meeting
                                            participants) — lines labeled Me/Others; Windows or Linux
+                                           Saves timestamped speech to sancho-meeting-YYYY-MM-DD.md
+                                           Combine with --notes to skip the assistant and use the notes filename
                                            Linux needs PulseAudio/PipeWire and pactl (pulseaudio-utils)
           --notes                          Transcribe to sancho-notes-YYYY-MM-DD.md in the current
-                                           directory — Claude is not involved
+                                           directory — the assistant is not involved
           --log                            Write a run log (console mirror + debug diagnostics + agent I/O)
                                            to ~/.sancho/sancho.log — this run only, not persisted
           -h, --help                      Show this help

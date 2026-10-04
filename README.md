@@ -8,7 +8,7 @@ Speech-to-text runs fully locally (sherpa-onnx whisper + silero VAD), so your vo
 
 - **Hands-free agent sessions** — run `sancho` in a project and talk to your agent (Claude Code, Cursor, Hermes, or Codex) like a coworker: ask questions, request changes, talk through code while you keep your hands on the keyboard or away from it.
 - **Dictation** — `sancho --notes` skips the agent entirely and appends everything you say to a dated markdown file in the current directory (`sancho-notes-YYYY-MM-DD.md`). Good for docs, emails, commit messages, standup notes.
-- **Meeting transcripts** — `sancho --meeting` transcribes both your microphone and the system audio (the other participants on a call), labeling each line `Me:` / `Others:` (Windows and Linux).
+- **Meeting transcripts** — `sancho --meeting` transcribes both your microphone and the system audio (the other participants on a call), labeling each line `Me:` / `Others:` (Windows and Linux). It saves speech to `sancho-meeting-YYYY-MM-DD.md` with local date, time, and UTC offset on each line. Add `--notes` to skip the assistant and save to the existing `sancho-notes-YYYY-MM-DD.md` filename instead.
 - **Private by design** — the transcription engine is fully offline and on-device. Audio is processed locally and discarded; nothing is uploaded for speech-to-text.
 
 ## How it works
@@ -69,6 +69,16 @@ sancho --help
 Agents: `claude`, `cursor`, `hermes`, `codex` — on a fresh install Sancho auto-detects whichever are on your PATH (picking one automatically, or asking if there are several) and saves your choice to the config. The first run of each model size downloads it, so give it a minute.
 
 > **Note:** Linux microphone selection and meeting capture require PulseAudio/PipeWire and `pactl`. macOS meeting capture is not supported yet.
+
+Sancho remembers microphone choices in priority order. Run `sancho --select-microphone` to choose again and move that microphone to the front. Normal startup uses the first available preference, falling back without changing the saved order. If a microphone disconnects, capture waits or switches to another available device; a preferred microphone is selected again when it returns. Failed devices are retried after a short delay. Meeting capture also follows changes to the default system output. Windows and macOS device names are best-effort identities: identical microphones may be indistinguishable with the current capture APIs.
+
+Meeting files append a dated session header on each run and timestamp each completed utterance, for example `[2026-10-04T14:05:06+02:00] Me: Let's start.` Timestamps record when transcription finishes; they are not audio start times. The same file remains open if a session crosses midnight, and each line includes its own date and offset. Only spoken transcripts are saved, without assistant replies or tool output. Meeting lines appear immediately in the display, even while an assistant is busy.
+
+To check the audio improvements one at a time:
+
+1. Run `sancho --notes --select-microphone`, choose a headset, and speak. Restart with `sancho --notes`; it should reuse the headset without asking.
+2. While recording, unplug the headset. Speak into the built-in microphone and check that transcription resumes. Reconnect the headset and check that Sancho switches back. Stop with Ctrl+C; it should also stop cleanly if every microphone is unavailable.
+3. Run `sancho --meeting --notes`. Speak and play a short recording through the current output. Check the dated notes file for timestamped `Me:` and `Others:` lines. Change the default output and check that capture follows it. Assistant output should never appear in the file.
 
 ## Ubuntu transcription test
 

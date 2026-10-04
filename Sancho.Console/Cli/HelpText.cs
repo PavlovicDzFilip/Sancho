@@ -20,13 +20,14 @@ public static class HelpText
           sancho config set <key> <value> Persist one config key
 
         Options:
-          --agent <name>                   Agent backend: claude (default), cursor, hermes or codex
+          --agent <name>                   Agent backend: claude (default), cursor, hermes, codex or dummy
+                                          dummy echoes speech locally; no CLI or account needed
           --model <size>                   Whisper model size: tiny, base, small (default) or medium
           --meeting                        Transcribe your mic + the system output (other meeting
                                            participants) — lines labeled Me/Others; Windows only
           --notes                          Transcribe to sancho-notes-YYYY-MM-DD.md in the current
                                            directory — Claude is not involved
-          --log                            Write a run log (console mirror + debug diagnostics + claude I/O)
+          --log                            Write a run log (console mirror + debug diagnostics + agent I/O)
                                            to ~/.sancho/sancho.log — this run only, not persisted
           -h, --help                      Show this help
           -v, --version                   Show version
@@ -45,7 +46,7 @@ public static class HelpText
 
         Config:
           File:  ~/.sancho/config.json    (SANCHO_CONFIG_DIR overrides the directory)
-          Keys:  agent                    (claude | cursor | hermes | codex)
+          Keys:  agent                    (claude | cursor | hermes | codex | dummy)
                  model                    (tiny | base | small | medium)
         """;
 }

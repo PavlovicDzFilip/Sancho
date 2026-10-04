@@ -96,11 +96,12 @@ static string? ChooseSession(IReadOnlyList<AgentService.SessionSummary> sessions
 }
 
 /// <summary>
-/// Creates the agent backend. The factory guarantees a usable executable:
+/// Creates the agent backend. Real backends require a usable executable:
 /// not installed or not logged in fails here, before the orchestrator starts.
 /// </summary>
 static AgentService CreateAgent(string agentName, string? resumeSessionId, IServiceProvider sp) => agentName switch
 {
+    "dummy" => new DummyAgentService(),
     "claude" => CreateClaudeAgent(resumeSessionId, sp),
     "cursor" => CreateCursorAgent(resumeSessionId, sp),
     "hermes" => CreateHermesAgent(resumeSessionId, sp),
@@ -162,9 +163,15 @@ async Task<int> Run(LogFileWriter? logFile)
     // The agent backend: config key or --agent flag; claude is the default.
     // Every backend shares the same voice flow.
     var agentName = (cliArgs.Agent ?? stored.Agent ?? "claude").ToLowerInvariant();
-    if (agentName is not ("claude" or "cursor" or "hermes" or "codex"))
+    if (agentName is not ("claude" or "cursor" or "hermes" or "codex" or "dummy"))
     {
-        AnsiConsole.MarkupLine($"[red]Agent '{agentName}' is not supported yet. Use 'claude', 'cursor', 'hermes' or 'codex'.[/]");
+        AnsiConsole.MarkupLine($"[red]Agent '{agentName}' is not supported yet. Use 'claude', 'cursor', 'hermes', 'codex' or 'dummy'.[/]");
+        return 2;
+    }
+
+    if (!cliArgs.Notes && agentName == "dummy" && cliArgs.Continue)
+    {
+        AnsiConsole.MarkupLine("[red]The dummy assistant has no saved sessions. Run without --continue.[/]");
         return 2;
     }
 
@@ -195,8 +202,8 @@ async Task<int> Run(LogFileWriter? logFile)
     var targetDir = Directory.GetCurrentDirectory();
 
     // Notes mode only transcribes — no system prompt file, no agent session.
-    // The agent factory (below) verifies the CLI is installed and logged in.
-    if (!cliArgs.Notes)
+    // Real agent factories verify CLI availability. Dummy needs no prompt or CLI.
+    if (!cliArgs.Notes && agentName != "dummy")
     {
         try
         {

@@ -37,6 +37,16 @@ sancho --agent hermes
 sancho --help
 ```
 
+## Ubuntu transcription test
+
+On branch `codex/ubuntu-transcription-test`, test the real microphone and local speech recognition without installing an AI CLI:
+
+```bash
+dotnet run --project Sancho.Console -- --agent dummy --model tiny --log
+```
+
+The dummy assistant repeats the recognized text through the normal display. It needs no login or API key and does not execute commands. Use an interactive desktop terminal with your default microphone selected in Ubuntu Sound settings. Setup, expected results, and troubleshooting are in [the Ubuntu test guide](docs/ubuntu-transcription-test.md).
+
 ## Transcription
 
 Sancho transcribes on-device with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (offline whisper .en int8 — `tiny`, `base`, `small` (default) or `medium`, segmented by silero VAD) — no network, no API key, and the audio never leaves your machine:
@@ -65,7 +75,7 @@ All four backends run in **YOLO mode**, allowing commands and edits without appr
 
 See [backend verification](docs/backend-verification.md) for tests and current live-check limits.
 
-Config keys: `agent` (claude | cursor | hermes | codex), `model` (tiny | base | small | medium).
+Config keys: `agent` (claude | cursor | hermes | codex | dummy), `model` (tiny | base | small | medium).
 
 ## Known issues
 

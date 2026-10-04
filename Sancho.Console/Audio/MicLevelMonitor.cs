@@ -44,6 +44,20 @@ public sealed class MicLevelMonitor
         _clock = clock ?? (() => Environment.TickCount64);
     }
 
+    /// <summary>Clear stale signal and clipping when capture stops or changes devices.</summary>
+    public void Reset()
+    {
+        Interlocked.Exchange(ref _levelBits, 0);
+        Interlocked.Exchange(ref _meanLevelBits, 0);
+        Interlocked.Exchange(ref _seenSignal, 0);
+        Interlocked.Exchange(ref _silentSince, _clock());
+        lock (_clipGate)
+        {
+            _clippedSince = -1;
+            _lastClippedUpdate = -1;
+        }
+    }
+
     /// <summary>Recent signal level, 0..1 (peak, exponentially smoothed).</summary>
     public double Level =>
         BitConverter.Int64BitsToDouble(Interlocked.Read(ref _levelBits));

@@ -30,9 +30,10 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
     }
 
     /// <inheritdoc />
-    public Task CaptureAsync(ChannelWriter<byte[]> writer, CancellationToken cancellationToken = default)
+    public async Task CaptureAsync(ChannelWriter<byte[]> writer, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(writer);
+        cancellationToken.ThrowIfCancellationRequested();
 
         var format = new WaveFormat(SampleRate, 16, 1); // 16-bit PCM, mono
         var tcs = new TaskCompletionSource();
@@ -77,19 +78,29 @@ public sealed class MicrophoneAudioSource : IAudioSource, IDisposable
             // Complete the channel so downstream consumers (e.g. the recorder)
             // finalize; the task itself reports errors only via the log.
             writer.TryComplete();
-            tcs.TrySetResult();
+            if (e.Exception is not null) tcs.TrySetException(e.Exception);
+            else tcs.TrySetResult();
         };
 
         // Stop recording when cancellation is requested
-        cancellationToken.Register(() =>
+        try
         {
-            _logger.LogDebug("Cancellation requested — stopping recording");
-            try { _waveIn?.StopRecording(); }
-            catch { /* may already be stopped */ }
-        });
-
-        _waveIn.StartRecording();
-        return tcs.Task;
+            _waveIn.StartRecording();
+            using var registration = cancellationToken.Register(() =>
+            {
+                _logger.LogDebug("Cancellation requested — stopping recording");
+                try { _waveIn?.StopRecording(); }
+                catch (Exception ex)
+                {
+                    tcs.TrySetException(ex);
+                }
+            });
+            await tcs.Task;
+        }
+        finally
+        {
+            writer.TryComplete();
+        }
     }
 
     /// <summary>

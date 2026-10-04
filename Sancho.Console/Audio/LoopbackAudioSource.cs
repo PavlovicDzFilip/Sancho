@@ -31,9 +31,10 @@ public sealed class LoopbackAudioSource : IAudioSource, IDisposable
     }
 
     /// <inheritdoc />
-    public Task CaptureAsync(ChannelWriter<byte[]> writer, CancellationToken cancellationToken = default)
+    public async Task CaptureAsync(ChannelWriter<byte[]> writer, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(writer);
+        cancellationToken.ThrowIfCancellationRequested();
 
         _capture = new WasapiLoopbackCapture();
         _queue = new Queue<float[]>();
@@ -62,22 +63,29 @@ public sealed class LoopbackAudioSource : IAudioSource, IDisposable
                 _logger.LogDebug("Loopback recording stopped");
 
             writer.TryComplete();
-            tcs.TrySetResult();
+            if (e.Exception is not null) tcs.TrySetException(e.Exception);
+            else tcs.TrySetResult();
         };
-
-        cancellationToken.Register(() =>
-        {
-            _logger.LogDebug("Cancellation requested — stopping loopback recording");
-            try { _capture?.StopRecording(); }
-            catch { /* may already be stopped */ }
-        });
 
         _display.History.AppendLine("🔊 Capturing system output (other meeting participants)");
         _logger.LogDebug("Starting loopback capture: {Rate} Hz, {Channels} ch — resampling to mono {Target} Hz",
             _capture.WaveFormat.SampleRate, _capture.WaveFormat.Channels, TargetSampleRate);
 
-        _capture.StartRecording();
-        return tcs.Task;
+        try
+        {
+            _capture.StartRecording();
+            using var registration = cancellationToken.Register(() =>
+            {
+                _logger.LogDebug("Cancellation requested — stopping loopback recording");
+                try { _capture?.StopRecording(); }
+                catch (Exception ex) { tcs.TrySetException(ex); }
+            });
+            await tcs.Task;
+        }
+        finally
+        {
+            writer.TryComplete();
+        }
     }
 
     public void Dispose()

@@ -98,6 +98,7 @@ public sealed class FfmpegAudioSource : IAudioSource, IDisposable
             var captured = await TryCaptureAsync(_inputArgs, writer, ct).ConfigureAwait(false);
             if (!captured && _fallbackInputArgs is not null)
             {
+                KillProcess(); // Release the failed attempt before replacing its process handle.
                 _logger.LogWarning("Default capture backend unavailable — falling back to ALSA");
                 captured = await TryCaptureAsync(_fallbackInputArgs, writer, ct).ConfigureAwait(false);
             }
@@ -203,7 +204,7 @@ public sealed class FfmpegAudioSource : IAudioSource, IDisposable
                 _logger.LogWarning("Dropped {Bytes} bytes — channel is full or completed", read);
         }
 
-        await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+        await process.WaitForExitAsync(ct).ConfigureAwait(false);
         await _stderrTask.ConfigureAwait(false);
 
         // A quick non-zero exit means the backend is unavailable (e.g. no pulse
@@ -240,7 +241,10 @@ public sealed class FfmpegAudioSource : IAudioSource, IDisposable
         try
         {
             if (!process.HasExited)
+            {
                 process.Kill(entireProcessTree: true);
+                process.WaitForExit();
+            }
         }
         catch (InvalidOperationException)
         {

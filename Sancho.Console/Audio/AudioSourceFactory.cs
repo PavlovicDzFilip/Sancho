@@ -18,7 +18,14 @@ public sealed class AudioSourceFactory(
     bool selectMicrophone = false)
 {
     public IAudioSource Create()
-        => ResolveMicrophone(selectMicrophone).CreateSource();
+    {
+        // Initial selection may prompt; all subsequent checks are automatic.
+        ResolveMicrophone(selectMicrophone);
+        return new ResilientAudioSource(() => ResolveMicrophone(allowPrompt: false),
+            loggerFactory.CreateLogger<ResilientAudioSource>(),
+            selectAvailable: excluded => ResolveMicrophone(allowPrompt: false, excludedIdentities: excluded),
+            onDeviceStopped: micMonitor.Reset);
+    }
 
     /// <summary>Enumerate fresh devices. Recovery sets allowPrompt=false and never alters saved priority.</summary>
     public AudioSourceSelection ResolveMicrophone(bool forceSelection = false, bool allowPrompt = true,
@@ -41,19 +48,31 @@ public sealed class AudioSourceFactory(
     /// </summary>
     public IAudioSource CreateLoopback()
     {
-        if (OperatingSystem.IsWindows())
-            return new LoopbackAudioSource(loggerFactory.CreateLogger<LoopbackAudioSource>(), display);
-
-        if (OperatingSystem.IsLinux())
+        AudioSourceSelection ResolveOutput()
         {
-            var monitor = LinuxLoopbackDevices.ResolveDefaultSinkMonitor();
-            return new FfmpegAudioSource($"System output: {monitor}",
-                ["-f", "pulse", "-i", monitor], fallbackInputArgs: null,
-                loggerFactory.CreateLogger<FfmpegAudioSource>(), display, micMonitor: null);
+            if (OperatingSystem.IsWindows())
+            {
+                using var devices = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+                using var output = devices.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
+                return new(output.ID, "System output: " + output.FriendlyName,
+                    () => new LoopbackAudioSource(loggerFactory.CreateLogger<LoopbackAudioSource>(), display));
+            }
+            if (OperatingSystem.IsLinux())
+            {
+                var monitor = LinuxLoopbackDevices.ResolveDefaultSinkMonitor();
+                return new(monitor, $"System output: {monitor}", () => new FfmpegAudioSource($"System output: {monitor}",
+                    ["-f", "pulse", "-i", monitor], fallbackInputArgs: null,
+                    loggerFactory.CreateLogger<FfmpegAudioSource>(), display, micMonitor: null));
+            }
+            throw new PlatformNotSupportedException(
+                "Meeting mode system audio capture is supported on Windows and Linux; macOS requires a virtual audio device and is not supported yet.");
         }
-
-        throw new PlatformNotSupportedException(
-            "Meeting mode system audio capture is supported on Windows and Linux; macOS requires a virtual audio device and is not supported yet.");
+        ResolveOutput(); // Initial preflight remains a clear startup error.
+        return new ResilientAudioSource(() =>
+        {
+            try { return ResolveOutput(); }
+            catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException) { return null; }
+        }, loggerFactory.CreateLogger<ResilientAudioSource>());
     }
 
     private AudioSourceSelection ResolveWindowsSource(bool forceSelection, bool allowPrompt, IReadOnlySet<string>? excludedIdentities)

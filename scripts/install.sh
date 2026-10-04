@@ -100,6 +100,24 @@ if ! ffmpeg -version >/dev/null 2>&1; then
 fi
 echo "ffmpeg: $(ffmpeg -version 2>/dev/null | head -n1)"
 
+# ---- Linux device selection and meeting output capture ----------------------
+if [ "$os" = "linux" ] && ! command -v pactl >/dev/null 2>&1; then
+    echo "Installing microphone selection and system audio support..."
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq && apt-get install -y pulseaudio-utils
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y pulseaudio-utils
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -Sy --noconfirm libpulse
+    elif command -v zypper >/dev/null 2>&1; then
+        zypper --non-interactive install pulseaudio-utils
+    elif command -v apk >/dev/null 2>&1; then
+        apk add pulseaudio-utils
+    else
+        echo "Install pactl for microphone selection and meeting mode. Default microphone capture remains available." >&2
+    fi
+fi
+
 # ---- Download the published executable --------------------------------------
 echo "Downloading sancho ($os-$arch)..."
 binary="$(mktemp "${TMPDIR:-/tmp}/sancho.XXXXXX")"

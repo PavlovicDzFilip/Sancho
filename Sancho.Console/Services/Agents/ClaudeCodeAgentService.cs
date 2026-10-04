@@ -29,21 +29,23 @@ public sealed class ClaudeCodeAgentService : AgentService
     private Process? _process;
     private StreamWriter? _stdin;
     private TaskCompletionSource? _turnComplete;
-    private volatile bool _ready;
+    private readonly HashSet<string> _completedResultIds = new(StringComparer.Ordinal);
+    private int _ready;
+    private readonly AgentLaunchOptions _launchOptions;
 
     public ClaudeCodeAgentService(
         string executable,
         string? sessionRoot,
         string? resumeSessionId,
-        ILogger<ClaudeCodeAgentService> logger)
+        ILogger<ClaudeCodeAgentService> logger, AgentLaunchOptions? launchOptions = null)
     {
         _executable = executable;
         _sessionRoot = sessionRoot ?? DefaultSessionRoot();
-        _targetDirectory = Directory.GetCurrentDirectory();
+        _launchOptions = launchOptions ?? new AgentLaunchOptions();
+        _targetDirectory = _launchOptions.WorkingDirectory;
         _logger = logger;
 
-        var promptPath = EnsureSystemPrompt(_targetDirectory).Path;
-        _systemPrompt = File.ReadAllText(promptPath).Trim();
+        _systemPrompt = _launchOptions.Instructions ?? File.ReadAllText(EnsureSystemPrompt(_targetDirectory).Path).Trim();
         _resumeSessionId = resumeSessionId;
         _sessionId = resumeSessionId ?? Guid.NewGuid().ToString("D");
     }
@@ -56,9 +58,10 @@ public sealed class ClaudeCodeAgentService : AgentService
     /// </summary>
     public override void Send(string sentence)
     {
-        if (!_ready)
+        if (Interlocked.CompareExchange(ref _ready, 0, 1) != 1)
             throw new InvalidOperationException($"{_executable} is not ready to accept input.");
-        _input.Writer.TryWrite(sentence);
+        if (!_input.Writer.TryWrite(sentence))
+            throw new InvalidOperationException("Agent event stream has stopped.");
     }
 
     /// <inheritdoc />
@@ -108,15 +111,8 @@ public sealed class ClaudeCodeAgentService : AgentService
         if (!Directory.Exists(dir))
             return null;
 
-        if (_resumeSessionId is { } id)
-        {
-            var path = Path.Combine(dir, id + ".jsonl");
-            return File.Exists(path) ? path : null;
-        }
-
-        return Directory.GetFiles(dir, "*.jsonl")
-            .OrderByDescending(File.GetLastWriteTimeUtc)
-            .FirstOrDefault();
+        var path = Path.Combine(dir, _sessionId + ".jsonl");
+        return File.Exists(path) ? path : null;
     }
 
     private static string GetSessionsDirectory(string sessionRoot, string targetDirectory) =>
@@ -208,7 +204,15 @@ public sealed class ClaudeCodeAgentService : AgentService
                 CreateNoWindow = true
             };
             using var proc = Process.Start(psi)!;
-            proc.WaitForExit(5_000);
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+            if (!proc.WaitForExit(5_000))
+            {
+                proc.Kill(entireProcessTree: true);
+                proc.WaitForExit(3_000);
+                throw new TimeoutException($"`{executable} {args}` timed out.");
+            }
+            Task.WhenAll(stdout, stderr).Wait(TimeSpan.FromSeconds(3));
             return proc.ExitCode;
         }
         catch (Exception ex)
@@ -228,79 +232,86 @@ public sealed class ClaudeCodeAgentService : AgentService
     public override async IAsyncEnumerable<AgentEvent> RunAsync(
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        // ── Spawn process ────────────────────────────────────────
-        var escapedPrompt = _systemPrompt.Replace("\"", "\\\"");
-        var resumeFlag = _resumeSessionId is { } id
-            ? $" --resume \"{id}\""
-            : $" --session-id \"{_sessionId}\"";
-        var args =
-            $"--print --verbose --input-format stream-json --output-format stream-json --permission-mode bypassPermissions{resumeFlag} --system-prompt \"{escapedPrompt}\"";
-
-        var psi = new ProcessStartInfo(_executable, args)
-        {
-            WorkingDirectory = _targetDirectory,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        _process = Process.Start(psi)
-                   ?? throw new InvalidOperationException($"Failed to start {_executable} process.");
-
-        _stdin = new StreamWriter(_process.StandardInput.BaseStream, Encoding.UTF8)
-        {
-            AutoFlush = true
-        };
-
-        // Health check
-        await Task.Delay(1500, ct);
-        if (_process.HasExited)
-        {
-            var errText = await _process.StandardError.ReadToEndAsync(ct);
-            throw new InvalidOperationException(
-                $"{_executable} process exited immediately with code {_process.ExitCode}." +
-                Environment.NewLine +
-                $"stderr: {errText.Trim()}");
-        }
-
-        // ── Event channel — bridges background tasks → enumerable ─
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var events = Channel.CreateUnbounded<AgentEvent>();
-
-        // Complete the channel when cancelled so ReadAllAsync exits cleanly
-        await using var reg = ct.Register(() => events.Writer.TryComplete());
-
-        var stdoutTask = ReadStdoutAsync(_process, events.Writer, ct);
-        var stderrTask = ReadStderrAsync(_process, events.Writer, ct);
-        var watchdogTask = WatchProcessAsync(_process, events.Writer, ct);
-        var inputTask = ProcessInputAsync(events.Writer, ct);
-
-        // Yield events as they arrive
-        await foreach (var evt in events.Reader.ReadAllAsync(ct))
-            yield return evt;
-
-        // ── Cleanup ──────────────────────────────────────────────
+        var worker = RunProcessAsync(events.Writer, lifetime.Token);
         try
         {
-            _stdin.Close();
+            await foreach (var evt in events.Reader.ReadAllAsync())
+                yield return evt;
         }
-        catch
+        finally
         {
-            // Nothing to do
+            lifetime.Cancel();
+            await worker;
         }
+    }
 
-        if (!_process.HasExited)
+    private async Task RunProcessAsync(ChannelWriter<AgentEvent> writer, CancellationToken ct)
+    {
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var readers = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var token = lifetime.Token;
+        Task stdout = Task.CompletedTask, stderr = Task.CompletedTask, input = Task.CompletedTask;
+        try
         {
-            await Task.WhenAny(
-                Task.WhenAll(stdoutTask, stderrTask, watchdogTask, inputTask),
-                Task.Delay(3_000, ct));
-
-            if (!_process.HasExited)
-                _process.Kill(entireProcessTree: true);
+            var arguments = new List<string>
+            {
+                "--print", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json",
+                "--permission-mode", "bypassPermissions",
+                _resumeSessionId is null ? "--session-id" : "--resume", _sessionId,
+                "--append-system-prompt", _systemPrompt
+            };
+            await using var owned = OwnedAgentProcess.Start(_launchOptions.CreateStartInfo(_executable, arguments), token);
+            _process = owned.Process;
+            _stdin = new StreamWriter(_process.StandardInput.BaseStream, new UTF8Encoding(false)) { AutoFlush = true };
+            try
+            {
+                stdout = ReadStdoutAsync(_process, writer, readers.Token);
+                stderr = ReadStderrAsync(_process, writer, readers.Token);
+                input = ProcessInputAsync(writer, token);
+                var exit = _process.WaitForExitAsync(token);
+                var completed = await Task.WhenAny(exit, stdout, input);
+                await completed;
+                // Stop accepting input immediately, but preserve the buffered output of a
+                // process that just exited. Descendants retaining pipe handles get a bound.
+                lifetime.Cancel();
+                await owned.StopAsync();
+                readers.CancelAfter(TimeSpan.FromSeconds(3));
+                await Task.WhenAll(stdout, stderr);
+                if (!ct.IsCancellationRequested)
+                {
+                    writer.TryWrite(new AgentEvent.Error($"{_executable} process stopped unexpectedly"));
+                    if (_turnComplete?.TrySetCanceled() == true)
+                        writer.TryWrite(AgentEvent.TurnComplete.Instance);
+                }
+                try { await exit; }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+            }
+            finally
+            {
+                lifetime.Cancel();
+                await owned.StopAsync();
+                readers.Cancel();
+                await Task.WhenAll(stdout, stderr, input);
+                _stdin.Dispose();
+                _stdin = null;
+                _process = null;
+            }
         }
-
-        await Task.WhenAll(stdoutTask, stderrTask, watchdogTask, inputTask);
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            writer.TryWrite(new AgentEvent.Error($"{_executable} failed: {ex.Message}"));
+            if (_turnComplete?.TrySetCanceled() == true)
+                writer.TryWrite(AgentEvent.TurnComplete.Instance);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _ready, 0);
+            _input.Writer.TryComplete();
+            writer.TryComplete();
+        }
     }
 
     // ── Input processor ────────────────────────────────────────────
@@ -309,12 +320,12 @@ public sealed class ClaudeCodeAgentService : AgentService
     {
         try
         {
-            _ready = true;
+            Interlocked.Exchange(ref _ready, 1);
             writer.TryWrite(AgentEvent.Ready.Instance);
 
             await foreach (var sentence in _input.Reader.ReadAllAsync(ct))
             {
-                _ready = false;
+                Interlocked.Exchange(ref _ready, 0);
 
                 var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 _turnComplete = tcs;
@@ -326,15 +337,18 @@ public sealed class ClaudeCodeAgentService : AgentService
                 }.ToJsonString();
 
                 _logger.LogDebug("→ {Executable}: {Text}", _executable, sentence);
-                await _stdin!.WriteLineAsync(json);
                 writer.TryWrite(AgentEvent.TurnStart.Instance);
+                await _stdin!.WriteLineAsync(json);
 
                 // No turn timeout — wait until Claude finishes. The watchdog
                 // completes this on process exit; cancellation aborts the wait.
                 await tcs.Task.WaitAsync(ct);
 
                 _turnComplete = null;
-                _ready = true;
+                ct.ThrowIfCancellationRequested();
+                if (_process!.HasExited)
+                    return;
+                Interlocked.Exchange(ref _ready, 1);
                 writer.TryWrite(AgentEvent.Ready.Instance);
             }
         }
@@ -369,7 +383,7 @@ public sealed class ClaudeCodeAgentService : AgentService
                     using var doc = JsonDocument.Parse(line);
                     HandleStreamMessage(doc.RootElement, writer);
                 }
-                catch (JsonException)
+                catch (Exception ex) when (ex is JsonException or InvalidOperationException)
                 {
                     writer.TryWrite(new AgentEvent.Status(line, AgentStatusKind.Info));
                 }
@@ -409,27 +423,11 @@ public sealed class ClaudeCodeAgentService : AgentService
         }
     }
 
-    // ── Process watchdog ───────────────────────────────────────────
-
-    private async Task WatchProcessAsync(
-        Process process, ChannelWriter<AgentEvent> writer, CancellationToken ct)
-    {
-        try
-        {
-            await process.WaitForExitAsync(ct);
-            writer.TryWrite(new AgentEvent.Error(
-                $"{_executable} process exited unexpectedly (code {process.ExitCode})"));
-            _turnComplete?.TrySetResult();
-        }
-        catch (OperationCanceledException)
-        {
-        }
-    }
-
     // ── Stream-json message dispatcher ─────────────────────────────
 
     private void HandleStreamMessage(JsonElement root, ChannelWriter<AgentEvent> writer)
     {
+        if (root.ValueKind != JsonValueKind.Object) return;
         var type = root.TryGetProperty("type", out var tp) ? tp.GetString() : null;
 
         switch (type)
@@ -446,8 +444,24 @@ public sealed class ClaudeCodeAgentService : AgentService
                 break;
 
             case "result":
+                if (root.TryGetProperty("uuid", out var uuid) && uuid.ValueKind == JsonValueKind.String
+                    && !_completedResultIds.Add(uuid.GetString()!)) break;
+                var completion = _turnComplete;
+                if (completion is null || completion.Task.IsCompleted) break;
+                var subtype = root.TryGetProperty("subtype", out var st) && st.ValueKind == JsonValueKind.String ? st.GetString() : null;
+                var failed = root.TryGetProperty("is_error", out var error) && error.ValueKind == JsonValueKind.True
+                    || subtype?.StartsWith("error", StringComparison.Ordinal) == true;
+                if (failed)
+                {
+                    var details = root.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array
+                        ? string.Join("; ", errors.EnumerateArray().Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() : e.GetRawText()))
+                        : null;
+                    if (string.IsNullOrWhiteSpace(details) && root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.String)
+                        details = result.GetString();
+                    writer.TryWrite(new AgentEvent.Error(details ?? subtype ?? "Claude turn failed"));
+                }
                 writer.TryWrite(AgentEvent.TurnComplete.Instance);
-                _turnComplete?.TrySetResult();
+                completion.TrySetResult();
                 break;
         }
     }
@@ -502,7 +516,7 @@ public sealed class ClaudeCodeAgentService : AgentService
                 continue;
 
             var toolId = block.TryGetProperty("tool_use_id", out var tid)
-                ? tid.GetString()?[..Math.Min(12, tid.GetString()!.Length)]
+                ? tid.GetString()
                 : "?";
             var isError = block.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
             writer.TryWrite(new AgentEvent.ToolResult(toolId!, isError));

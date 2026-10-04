@@ -1,299 +1,224 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 
 namespace Sancho.Console.Agents;
 
-/// <summary>
-/// Agent backend for Nous Research's Hermes CLI. One process per turn using
-/// the one-shot <c>hermes -z</c> mode (final answer text on stdout, nothing
-/// else). Turns are chained by discovering the newest session id after the
-/// first turn and passing <c>--pass-session-id</c> on subsequent calls.
-/// Session-id discovery and listing parse the CLI's output best-effort —
-/// hermes is not required to be installed for sancho to build or run other
-/// agents, and failures degrade to fresh sessions.
-/// </summary>
+/// <summary>Hermes structured one-shot turns, continued using the directly reported session ID.</summary>
 public sealed class HermesAgentService : AgentService
 {
     private const string Executable = "hermes";
-
-    // hermes session ids are UUIDs; this is how we pull ids out of CLI output.
-    private static readonly Regex SessionIdPattern = new(
-        "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-        RegexOptions.Compiled);
-
+    private static readonly Regex SessionIdPattern = new(@"\b\d{8}_\d{6}_[0-9a-fA-F]+\b", RegexOptions.Compiled);
     private readonly string? _resumeSessionId;
     private readonly ILogger<HermesAgentService> _logger;
+    private readonly AgentLaunchOptions _launchOptions;
     private readonly Channel<string> _input = Channel.CreateUnbounded<string>();
-
     private string? _sessionId;
-    private volatile bool _ready;
+    private int _ready;
 
-    public HermesAgentService(string? resumeSessionId, ILogger<HermesAgentService> logger)
+    public HermesAgentService(string? resumeSessionId, ILogger<HermesAgentService> logger, AgentLaunchOptions? launchOptions = null)
     {
         _resumeSessionId = resumeSessionId;
         _sessionId = resumeSessionId;
         _logger = logger;
+        _launchOptions = launchOptions ?? new AgentLaunchOptions();
     }
 
-    /// <inheritdoc />
     public override bool ContinueSession => _resumeSessionId is not null;
-
-    /// <inheritdoc />
     public override void Send(string sentence)
     {
-        if (!_ready)
-            throw new InvalidOperationException($"{Executable} is not ready to accept input.");
-        _input.Writer.TryWrite(sentence);
+        if (Interlocked.CompareExchange(ref _ready, 0, 1) != 1)
+            throw new InvalidOperationException("hermes is not ready to accept input.");
+        if (!_input.Writer.TryWrite(sentence))
+            throw new InvalidOperationException("Agent event stream has stopped.");
     }
 
-    /// <inheritdoc />
-    public override async IAsyncEnumerable<AgentEvent> RunAsync(
-        [EnumeratorCancellation] CancellationToken ct = default)
+    public override async IAsyncEnumerable<AgentEvent> RunAsync([EnumeratorCancellation] CancellationToken ct = default)
     {
         var events = Channel.CreateUnbounded<AgentEvent>();
-        var worker = WorkerAsync(events.Writer, ct);
-
-        try
-        {
-            await foreach (var evt in events.Reader.ReadAllAsync())
-                yield return evt;
-        }
-        finally
-        {
-            await worker;
-        }
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var worker = WorkerAsync(events.Writer, lifetime.Token);
+        try { await foreach (var evt in events.Reader.ReadAllAsync()) yield return evt; }
+        finally { lifetime.Cancel(); await worker; }
     }
 
-    /// <inheritdoc />
-    public override IReadOnlyList<AgentService.SessionSummary> ListSessions(string targetDirectory) =>
-        ListSessions();
+    public override IReadOnlyList<SessionSummary> ListSessions(string targetDirectory) =>
+        ParseSessionList(Capture(_launchOptions, ["sessions", "list", "--workspace", Path.GetFullPath(targetDirectory)]).Output);
 
-    /// <summary>Lists recent sessions from <c>hermes sessions list</c> output, newest first.</summary>
-    public static IReadOnlyList<AgentService.SessionSummary> ListSessions()
+    public static IReadOnlyList<SessionSummary> ListSessions() =>
+        ParseSessionList(Capture(new AgentLaunchOptions(), ["sessions", "list"]).Output);
+
+    internal static IReadOnlyList<SessionSummary> ParseSessionList(string output)
     {
-        var lines = TryRunAndCapture(["sessions", "list"]);
-        var sessions = new List<AgentService.SessionSummary>();
-        foreach (var line in lines)
+        var sessions = new List<SessionSummary>();
+        foreach (var line in output.Split('\n'))
         {
             var match = SessionIdPattern.Match(line);
-            if (!match.Success)
-                continue;
-
-            var preview = line.Replace(match.Value, "").Trim(' ', '|', '-', '\t');
-            sessions.Add(new AgentService.SessionSummary(
-                match.Value, DateTime.MinValue, null, preview.Length > 0 ? preview : "(session)"));
+            if (!match.Success) continue;
+            var preview = line.Replace(match.Value, "").Trim(' ', '|', '-', '\t', '\r');
+            sessions.Add(new SessionSummary(match.Value, DateTime.MinValue, null, preview.Length > 0 ? preview : "(session)"));
         }
-
-        // hermes lists newest first already; LastActivity is unknown so keep
-        // the CLI's order.
         return sessions;
     }
 
-    /// <inheritdoc />
     public override IReadOnlyList<(bool IsUser, string Text)> GetSessionMessages()
     {
-        var id = _resumeSessionId ?? _sessionId;
-        if (id is null)
-            return Array.Empty<(bool IsUser, string Text)>();
-
+        if (_sessionId is null) return Array.Empty<(bool, string)>();
         var export = Path.Combine(Path.GetTempPath(), $"sancho-hermes-{Guid.NewGuid():N}.jsonl");
         try
         {
-            var exit = TryRun(["sessions", "export", export, "--session-id", id], out _);
-            if (exit != 0 || !File.Exists(export))
-                return Array.Empty<(bool IsUser, string Text)>();
-
-            return SessionJson.ReadMessages(export, SessionJson.Format.Auto);
+            var result = Capture(_launchOptions, ["sessions", "export", export, "--session-id", _sessionId]);
+            return result.ExitCode == 0 && File.Exists(export) ? ReadExport(export) : Array.Empty<(bool, string)>();
         }
-        finally
-        {
-            try { File.Delete(export); }
-            catch (IOException) { /* temp file — best effort */ }
-        }
+        finally { try { File.Delete(export); } catch (IOException) { } }
     }
 
-    /// <inheritdoc />
-    public override void VerifyAvailable() => VerifyAvailable(Executable);
+    internal static IReadOnlyList<(bool IsUser, string Text)> ReadExport(string path)
+    {
+        var result = new List<(bool, string)>();
+        foreach (var line in File.ReadLines(path))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object || !doc.RootElement.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array) continue;
+                foreach (var message in messages.EnumerateArray())
+                {
+                    if (message.ValueKind != JsonValueKind.Object) continue;
+                    var role = String(message, "role");
+                    if (role is not ("user" or "assistant")) continue;
+                    var text = SessionJson.ExtractText(message);
+                    if (!string.IsNullOrWhiteSpace(text)) result.Add((role == "user", text));
+                }
+            }
+            catch (JsonException) { }
+        }
+        return result;
+    }
 
-    /// <summary>Checks hermes is installed.</summary>
+    public override void VerifyAvailable() => VerifyAvailable(_launchOptions.Executable ?? Executable);
     public static void VerifyAvailable(string executable = Executable)
     {
-        try
-        {
-            var psi = new ProcessStartInfo(executable, "--version")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var proc = Process.Start(psi);
-            if (proc is null || !proc.WaitForExit(5_000) || proc.ExitCode != 0)
-                throw new InvalidOperationException(
-                    "hermes is not installed. Install it from hermes.dev and try again.");
-        }
-        catch (InvalidOperationException)
-        {
-            throw;
-        }
-        catch (Exception)
-        {
-            throw new InvalidOperationException(
-                "Could not find `hermes`. Install it from hermes.dev and try again.");
-        }
+        if (Capture(new AgentLaunchOptions { Executable = executable }, ["--version"]).ExitCode != 0)
+            throw new InvalidOperationException("Could not run `hermes`. Install it from hermes.dev and try again.");
     }
-
-    // ── Turn worker ────────────────────────────────────────────────
 
     private async Task WorkerAsync(ChannelWriter<AgentEvent> writer, CancellationToken ct)
     {
+        var active = false;
         try
         {
-            _ready = true;
+            Interlocked.Exchange(ref _ready, 1);
             writer.TryWrite(AgentEvent.Ready.Instance);
-
-            var firstTurn = true;
             await foreach (var sentence in _input.Reader.ReadAllAsync(ct))
             {
-                _ready = false;
+                active = true;
                 writer.TryWrite(AgentEvent.TurnStart.Instance);
-
-                var text = await RunTurnAsync(sentence, ct);
-                if (text is not null)
-                    writer.TryWrite(new AgentEvent.AssistantText(text));
-
-                if (firstTurn && _resumeSessionId is null)
-                {
-                    // The one-shot reply carries no session id — discover the
-                    // newest session so later turns continue it.
-                    var discovered = DiscoverNewestSessionId();
-                    if (discovered is not null)
-                    {
-                        _sessionId = discovered;
-                        _logger.LogDebug("hermes session discovered: {SessionId}", discovered);
-                    }
-                }
-
-                firstTurn = false;
+                await RunTurnAsync(sentence, writer, ct);
                 writer.TryWrite(AgentEvent.TurnComplete.Instance);
-                _ready = true;
+                active = false;
+                Interlocked.Exchange(ref _ready, 1);
                 writer.TryWrite(AgentEvent.Ready.Instance);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
         {
+            writer.TryWrite(new AgentEvent.Error($"hermes failed: {ex.Message}"));
+            if (active) writer.TryWrite(AgentEvent.TurnComplete.Instance);
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        finally
         {
-            writer.TryWrite(new AgentEvent.Error($"{Executable} failed: {ex.Message}"));
+            Interlocked.Exchange(ref _ready, 0);
+            _input.Writer.TryComplete();
+            writer.TryComplete();
         }
     }
 
-    /// <summary>Runs one one-shot turn; returns the final answer text, or null on failure.</summary>
-    private async Task<string?> RunTurnAsync(string sentence, CancellationToken ct)
+    private async Task RunTurnAsync(string sentence, ChannelWriter<AgentEvent> writer, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo(Executable)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        psi.ArgumentList.Add("-z");
-        psi.ArgumentList.Add(sentence);
-        if (_sessionId is not null)
-        {
-            psi.ArgumentList.Add("--pass-session-id");
-            psi.ArgumentList.Add(_sessionId);
-        }
-
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start {Executable} process.");
-        _logger.LogDebug("→ {Executable}: {Text}", Executable, sentence);
-
-        var stderrTask = ReadAllAsync(process.StandardError, ct);
-        var stdout = await ReadAllAsync(process.StandardOutput, ct);
-        await process.WaitForExitAsync(ct);
-        var stderr = await stderrTask;
-
-        if (!string.IsNullOrWhiteSpace(stderr))
-            _logger.LogDebug("hermes stderr: {Text}", stderr.Trim());
-
-        if (process.ExitCode != 0 && !ct.IsCancellationRequested)
-            return null;
-
-        var text = stdout.Trim();
-        return text.Length > 0 ? text : null;
-    }
-
-    /// <summary>Finds the newest session id in `hermes sessions list` output.</summary>
-    private static string? DiscoverNewestSessionId()
-    {
-        foreach (var line in TryRunAndCapture(["sessions", "list"]))
-        {
-            var match = SessionIdPattern.Match(line);
-            if (match.Success)
-                return match.Value;
-        }
-
-        return null;
-    }
-
-    // ── Process helpers ────────────────────────────────────────────
-
-    private static async Task<string> ReadAllAsync(StreamReader reader, CancellationToken ct)
-    {
+        var instructions = _launchOptions.ReadInstructions();
+        var prompt = instructions.Length == 0 ? sentence : $"<sancho_instructions>\n{instructions}\n</sancho_instructions>\n\n{sentence}";
+        var args = new List<string> { "--in", Path.GetFullPath(_launchOptions.WorkingDirectory), "chat", "-q", prompt, "--format", "stream-json", "--oneshot", "--yolo" };
+        if (_sessionId is not null) args.AddRange(["--resume", _sessionId]);
+        await using var owned = OwnedAgentProcess.Start(_launchOptions.CreateStartInfo(Executable, args), ct);
+        var process = owned.Process;
+        process.StandardInput.Close();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        var terminal = false;
+        var emittedText = false;
+        string? failure = null;
         try
         {
-            return await reader.ReadToEndAsync(ct);
-        }
-        catch (OperationCanceledException)
-        {
-            return "";
-        }
-    }
-
-    private static int TryRun(string[] args, out string stdout)
-    {
-        var psi = new ProcessStartInfo(Executable)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        foreach (var arg in args)
-            psi.ArgumentList.Add(arg);
-
-        try
-        {
-            using var proc = Process.Start(psi);
-            if (proc is null)
+            while (await process.StandardOutput.ReadLineAsync(ct) is { } line)
             {
-                stdout = "";
-                return -1;
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                // Hermes can print bootstrap/workspace diagnostics before enabling JSON mode.
+                // Ignore plain text, but still reject damaged structured events and require a result.
+                var trimmed = line.AsSpan().TrimStart();
+                if (trimmed[0] is not ('{' or '[')) continue;
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object) throw new InvalidOperationException("Invalid Hermes stream event.");
+                var id = String(root, "session_id");
+                if (!string.IsNullOrWhiteSpace(id)) _sessionId = id;
+                switch (String(root, "type"))
+                {
+                    case "text":
+                        var text = String(root, "text");
+                        if (text.Length > 0) { emittedText = true; writer.TryWrite(new AgentEvent.AssistantText(text)); }
+                        break;
+                    case "tool_use":
+                        writer.TryWrite(new AgentEvent.ToolUse(String(root, "name"), root.TryGetProperty("input", out var input) ? input.GetRawText() : ""));
+                        break;
+                    case "tool_result":
+                        var toolId = String(root, "tool_call_id");
+                        writer.TryWrite(new AgentEvent.ToolResult(toolId.Length > 0 ? toolId : String(root, "name"), root.TryGetProperty("is_error", out var error) && error.ValueKind == JsonValueKind.True));
+                        break;
+                    case "result":
+                        terminal = true;
+                        if (root.TryGetProperty("exit_code", out var code) && code.TryGetInt32(out var value) && value != 0 || !string.IsNullOrEmpty(String(root, "error")))
+                            failure = String(root, "error") is { Length: > 0 } detail ? detail : "Hermes reported a failed turn.";
+                        if (!emittedText && String(root, "text") is { Length: > 0 } final) { emittedText = true; writer.TryWrite(new AgentEvent.AssistantText(final)); }
+                        break;
+                }
             }
-
-            stdout = proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit(5_000);
-            return proc.ExitCode;
+            await process.WaitForExitAsync(ct);
+            ct.ThrowIfCancellationRequested();
+            var stderr = await stderrTask;
+            if (stderr.Length > 0) _logger.LogDebug("hermes stderr: {Text}", stderr);
+            if (process.ExitCode != 0) failure ??= $"Hermes exited with code {process.ExitCode}: {stderr.Trim()}";
+            if (!terminal) failure ??= "Hermes exited without a terminal result event.";
+            if (_sessionId is null) failure ??= "Hermes did not report a session ID; continuation cannot be guaranteed.";
+            if (failure is not null) throw new InvalidOperationException(failure);
         }
-        catch (Exception)
-        {
-            stdout = "";
-            return -1;
-        }
+        finally { await owned.StopAsync(); await stderrTask; }
     }
 
-    private static IReadOnlyList<string> TryRunAndCapture(string[] args)
-    {
-        var exit = TryRun(args, out var stdout);
-        if (exit != 0 || string.IsNullOrWhiteSpace(stdout))
-            return Array.Empty<string>();
+    private static string String(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
 
-        return stdout.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
+    private static (int ExitCode, string Output) Capture(AgentLaunchOptions options, string[] args)
+    {
+        try { return CaptureAsync(options, args).GetAwaiter().GetResult(); }
+        catch (Exception) { return (-1, ""); }
+    }
+
+    private static async Task<(int ExitCode, string Output)> CaptureAsync(AgentLaunchOptions options, string[] args)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await using var owned = OwnedAgentProcess.Start(options.CreateStartInfo(Executable, args), timeout.Token);
+        owned.Process.StandardInput.Close();
+        var stdout = owned.Process.StandardOutput.ReadToEndAsync();
+        var stderr = owned.Process.StandardError.ReadToEndAsync();
+        try
+        {
+            await owned.Process.WaitForExitAsync(timeout.Token);
+            return (owned.Process.ExitCode, await stdout);
+        }
+        finally { await owned.StopAsync(); await stdout; await stderr; }
     }
 }

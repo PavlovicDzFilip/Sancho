@@ -8,7 +8,7 @@ Speech-to-text runs fully locally (sherpa-onnx whisper + silero VAD), so your vo
 
 - **Hands-free agent sessions** — run `sancho` in a project and talk to your agent (Claude Code, Cursor, Hermes, or Codex) like a coworker: ask questions, request changes, talk through code while you keep your hands on the keyboard or away from it.
 - **Dictation** — `sancho --notes` skips the agent entirely and appends everything you say to a dated markdown file in the current directory (`sancho-notes-YYYY-MM-DD.md`). Good for docs, emails, commit messages, standup notes.
-- **Meeting transcripts** — `sancho --meeting` transcribes both your microphone and the system audio (the other participants on a call), labeling each line `Me:` / `Others:` (Windows only for now).
+- **Meeting transcripts** — `sancho --meeting` transcribes both your microphone and the system audio (the other participants on a call), labeling each line `Me:` / `Others:` (Windows and Linux).
 - **Private by design** — the transcription engine is fully offline and on-device. Audio is processed locally and discarded; nothing is uploaded for speech-to-text.
 
 ## How it works
@@ -52,7 +52,7 @@ Both installers:
 - install it for all users (`C:\Program Files\Sancho` on Windows, `/usr/local/bin` on macOS/Linux),
 - prompt for administrator/sudo rights.
 
-Requirements: the CLI for your chosen agent — the [Claude CLI](https://docs.anthropic.com/en/docs/claude-code/setup) by default — plus ffmpeg on macOS/Linux.
+Requirements: an installed and authenticated CLI for your selected backend (`claude`, `codex`, `cursor-agent` or `agent`, or `hermes`), plus ffmpeg on macOS/Linux. Linux microphone selection and meeting mode also use `pactl` (Ubuntu package `pulseaudio-utils`); the installer installs it. Unset backend selection is auto-detected on first run. Sancho checks CLI availability before starting the assistant.
 
 ## Usage
 
@@ -60,7 +60,7 @@ Requirements: the CLI for your chosen agent — the [Claude CLI](https://docs.an
 sancho               # talk to your agent in the current directory
 sancho --continue    # resume a previous session
 sancho --notes       # dictation: append to sancho-notes-YYYY-MM-DD.md, no agent
-sancho --meeting     # transcribe mic + system audio, labeled Me:/Others: (Windows)
+sancho --meeting     # transcribe mic + system audio, labeled Me:/Others: (Windows/Linux)
 sancho --agent codex # use a different agent for this run
 sancho --model base  # smaller/faster transcription model for this run
 sancho --help
@@ -68,7 +68,17 @@ sancho --help
 
 Agents: `claude`, `cursor`, `hermes`, `codex` — on a fresh install Sancho auto-detects whichever are on your PATH (picking one automatically, or asking if there are several) and saves your choice to the config. The first run of each model size downloads it, so give it a minute.
 
-> **Note:** `--meeting` is Windows-only for now — there's no macOS or Linux support yet. If you'd like to build that, I'd be very happy to have it.
+> **Note:** Linux microphone selection and meeting capture require PulseAudio/PipeWire and `pactl`. macOS meeting capture is not supported yet.
+
+## Ubuntu transcription test
+
+Test the real microphone and local speech recognition without installing an AI CLI:
+
+```bash
+dotnet run --project Sancho.Console -- --agent dummy --model tiny --log
+```
+
+The dummy assistant repeats the recognized text through the normal display. It needs no login or API key and does not execute commands. Use an interactive desktop terminal and select your microphone in the startup picker. Setup, expected results, and troubleshooting are in [the Ubuntu test guide](docs/ubuntu-transcription-test.md).
 
 ## Transcription
 
@@ -88,19 +98,27 @@ sancho config set model small
 sancho config set agent claude
 ```
 
-Config keys: `agent` (claude | cursor | hermes | codex; auto-detected from your PATH when unset), `model` (tiny | base | small | medium). Precedence: defaults < config file < flags.
+Config keys: `agent` (claude | cursor | hermes | codex | dummy; auto-detected from your PATH when unset), `model` (tiny | base | small | medium). Precedence: defaults < config file < flags.
 
 The system prompt is read from `.sancho.md` in the directory you run Sancho from. If the file is missing, Sancho creates it with a default prompt and tells you — edit it to customize how the agent behaves on your project.
 
+Speech spoken while the assistant is busy is queued and joined into the next turn when it is ready. Each backend reports replies, tools, and errors through the same display. Ctrl+C stops capture and owned assistant processes. If the backend stops unexpectedly, Sancho stops capture and keeps unsent speech visible.
+
+All four backends run in **YOLO mode**, allowing commands and edits without approval prompts. Run Sancho only in a directory where you authorize those actions. Authentication, available models, tools, and MCP configuration remain specific to each native CLI.
+
+`.sancho.md` is appended to Claude's native system prompt, passed as Codex developer instructions, and prepended to each Cursor/Hermes turn. Native instruction precedence and context limits can differ. Session IDs belong to their backend: changing `--agent` starts or resumes that backend's own conversation, and does not transfer history between providers. Cursor's session picker combines native CLI chat metadata and local IDE transcripts. Native CLI conversations resume by ID, but their binary history is not displayed by Sancho; IDE JSONL transcripts can be displayed. Hermes session summaries and exports depend on its CLI output.
+
+See [backend verification](docs/backend-verification.md) for tests and current live-check limits.
+
 ## Known issues
 
-- **Built-in microphone on AMD Ryzen AI 300 laptops (kernel ≥ 6.16):** the `snd_acp_pdm` driver feeds a clipped, full-scale signal instead of real audio — an upstream driver bug ([Framework Community thread](https://community.frame.work/t/laptop13-ryzen-ai-340-internal-mic-in-fedora42-doesnt-work/75748), [sof-project#5714](https://github.com/thesofproject/linux/issues/5714)). Sancho detects the clipped signal and warns; use a USB or 3.5mm headset mic until a kernel/driver fix lands.
+- **Clipped microphone input:** excessive capture gain or microphone boost can saturate audio before Sancho receives it. The warning measures sustained full-scale samples and does not identify a CPU or driver. Lower input gain/boost or select another microphone.
 
 ## Building & Releasing
 
 Requires the .NET 10 SDK.
 
-- `scripts/publish.ps1` (Windows) / `scripts/publish.sh` (macOS/Linux) build all platforms: `win-x64`, `linux-x64`, `linux-arm64`, `osx-arm64`, `osx-x64`.
+- `scripts/publish.ps1` (Windows/Linux) / `scripts/publish.sh` (macOS/Linux) build all platforms: `win-x64`, `linux-x64`, `linux-arm64`, `osx-arm64`, `osx-x64`.
 - Output: `artifacts/publish/<platform>/`, with release-ready assets staged in `artifacts/release/`.
 - To release: create a GitHub release and attach everything from `artifacts/release/` (`sancho.exe`, `sancho-linux-x64`, `sancho-osx-arm64`, …). The installers download from `releases/latest/download`.
 

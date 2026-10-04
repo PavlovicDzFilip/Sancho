@@ -89,7 +89,7 @@ static string? ChooseSession(IReadOnlyList<AgentService.SessionSummary> sessions
             .Title("Choose a session to continue")
             .UseConverter(s => s.Id.Length == 0
                 ? s.Preview
-                : $"{s.LastActivity:yyyy-MM-dd HH:mm}  {Markup.Escape(s.Title ?? s.Preview)}")
+                : $"{(s.LastActivity == DateTime.MinValue ? "unknown time" : s.LastActivity.ToString("yyyy-MM-dd HH:mm"))}  {Markup.Escape(s.Title ?? s.Preview)}")
             .AddChoices(choices));
 
     return chosen.Id.Length == 0 ? null : chosen.Id;
@@ -108,9 +108,9 @@ static string? ResolveAgent(CliArgs cliArgs, SanchoConfig stored)
     var explicitName = (cliArgs.Agent ?? stored.Agent)?.ToLowerInvariant();
     if (explicitName is not null)
     {
-        if (explicitName is not ("claude" or "cursor" or "hermes" or "codex"))
+        if (explicitName is not ("claude" or "cursor" or "hermes" or "codex" or "dummy"))
         {
-            AnsiConsole.MarkupLine($"[red]Agent '{explicitName}' is not supported yet. Use 'claude', 'cursor', 'hermes' or 'codex'.[/]");
+            AnsiConsole.MarkupLine($"[red]Agent '{explicitName}' is not supported yet. Use 'claude', 'cursor', 'hermes', 'codex' or 'dummy'.[/]");
             return null;
         }
         return explicitName;
@@ -120,7 +120,9 @@ static string? ResolveAgent(CliArgs cliArgs, SanchoConfig stored)
         return null; // notes mode never involves an agent
 
     var available = AgentDetector.Supported
-        .Where(a => AgentDetector.IsOnPath(a.Executable))
+        .Where(a => a.Name == "cursor"
+            ? CursorAgentService.IsInstalled()
+            : AgentDetector.IsOnPath(a.Executable))
         .ToList();
 
     switch (available.Count)
@@ -157,11 +159,12 @@ static string? ResolveAgent(CliArgs cliArgs, SanchoConfig stored)
 }
 
 /// <summary>
-/// Creates the agent backend. The factory guarantees a usable executable:
+/// Creates the agent backend. Real backends require a usable executable:
 /// not installed or not logged in fails here, before the orchestrator starts.
 /// </summary>
 static AgentService CreateAgent(string agentName, string? resumeSessionId, IServiceProvider sp) => agentName switch
 {
+    "dummy" => new DummyAgentService(),
     "claude" => CreateClaudeAgent(resumeSessionId, sp),
     "cursor" => CreateCursorAgent(resumeSessionId, sp),
     "hermes" => CreateHermesAgent(resumeSessionId, sp),
@@ -202,8 +205,8 @@ static AgentService CreateCodexAgent(string? resumeSessionId, IServiceProvider s
 static IReadOnlyList<AgentService.SessionSummary> ListAgentSessions(string agentName, string targetDirectory) => agentName switch
 {
     "cursor" => CursorAgentService.ListSessions(CursorAgentService.DefaultSessionRoot(), targetDirectory),
-    "hermes" => HermesAgentService.ListSessions(),
-    "codex" => CodexAgentService.ListAllSessions(CodexAgentService.DefaultSessionRoot()),
+    "hermes" => new HermesAgentService(null, Microsoft.Extensions.Logging.Abstractions.NullLogger<HermesAgentService>.Instance).ListSessions(targetDirectory),
+    "codex" => CodexAgentService.ListAllSessions(CodexAgentService.DefaultSessionRoot(), targetDirectory),
     _ => ClaudeCodeAgentService.ListSessions(ClaudeCodeAgentService.DefaultSessionRoot(), targetDirectory),
 };
 
@@ -211,9 +214,9 @@ static IReadOnlyList<AgentService.SessionSummary> ListAgentSessions(string agent
 
 async Task<int> Run(LogFileWriter? logFile)
 {
-    if (cliArgs.Meeting && !OperatingSystem.IsWindows())
+    if (cliArgs.Meeting && !OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
     {
-        AnsiConsole.MarkupLine("[red]--meeting is Windows-only for now (loopback capture); Linux/macOS coming later.[/]");
+        AnsiConsole.MarkupLine("[red]--meeting supports Windows and Linux (PulseAudio/PipeWire). macOS system audio capture is not supported yet.[/]");
         return 2;
     }
 
@@ -227,6 +230,12 @@ async Task<int> Run(LogFileWriter? logFile)
     var agentName = ResolveAgent(cliArgs, stored);
     if (agentName is null && !cliArgs.Notes)
         return 2;
+
+    if (!cliArgs.Notes && agentName == "dummy" && cliArgs.Continue)
+    {
+        AnsiConsole.MarkupLine("[red]The dummy assistant has no saved sessions. Run without --continue.[/]");
+        return 2;
+    }
 
     // The whisper model size: config key or --model flag; small is the default.
     var modelName = (cliArgs.Model ?? stored.Model ?? WhisperModels.DefaultSize).ToLowerInvariant();
@@ -255,8 +264,8 @@ async Task<int> Run(LogFileWriter? logFile)
     var targetDir = Directory.GetCurrentDirectory();
 
     // Notes mode only transcribes — no system prompt file, no agent session.
-    // The agent factory (below) verifies the CLI is installed and logged in.
-    if (!cliArgs.Notes)
+    // Real agent factories verify CLI availability. Dummy needs no prompt or CLI.
+    if (!cliArgs.Notes && agentName != "dummy")
     {
         try
         {
@@ -305,8 +314,8 @@ async Task<int> Run(LogFileWriter? logFile)
 
     if (cliArgs.Notes)
     {
-        // Notes mode never involves Claude — no CLI check, no session, no
-        // .sancho.md side effects. The orchestrator gets a null ClaudeService.
+        // Notes mode never involves an assistant — no CLI check, no session, no
+        // .sancho.md side effects. The orchestrator gets a null AgentService.
         services.AddSingleton<Orchestrator>(sp => new Orchestrator(
             sp.GetRequiredService<AudioSourceFactory>(),
             sp.GetRequiredService<LocalTranscriptionService>(),

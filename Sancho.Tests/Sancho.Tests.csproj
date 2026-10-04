@@ -15,7 +15,15 @@
 
     <ItemGroup>
         <ProjectReference Include="..\Sancho.Console\Sancho.Console.csproj" />
+        <ProjectReference Include="..\Sancho.ProcessTestHost\Sancho.ProcessTestHost.csproj" ReferenceOutputAssembly="false" />
     </ItemGroup>
+
+    <Target Name="CopyProcessTestHost" AfterTargets="Build">
+        <ItemGroup>
+            <ProcessTestHostFiles Include="..\Sancho.ProcessTestHost\bin\$(Configuration)\net10.0\Sancho.ProcessTestHost.*" />
+        </ItemGroup>
+        <Copy SourceFiles="@(ProcessTestHostFiles)" DestinationFolder="$(OutDir)process-test-host" />
+    </Target>
 
     <ItemGroup>
         <None Update="fixtures\**" CopyToOutputDirectory="PreserveNewest" />

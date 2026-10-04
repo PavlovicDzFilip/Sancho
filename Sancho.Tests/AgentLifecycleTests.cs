@@ -79,7 +79,12 @@ public class AgentLifecycleTests
             if (!disposeEarly) lifetime.Cancel();
             await stream.DisposeAsync().AsTask().WaitAsync(timeout.Token);
             Assert.False(IsRunning(pid));
-            Assert.False(IsRunning(childPid));
+            // WaitForExit waits for the root, not descendants. Tree termination is
+            // asynchronous; Unix descendants may briefly be zombies awaiting reaping.
+            var descendantDeadline = Stopwatch.StartNew();
+            while (IsRunning(childPid) && descendantDeadline.Elapsed < TimeSpan.FromSeconds(5))
+                await Task.Delay(20, timeout.Token);
+            Assert.False(IsRunning(childPid), $"Child {childPid} survived process-tree termination.");
             Assert.Throws<InvalidOperationException>(() => agent.Send("after stop"));
         }
         finally

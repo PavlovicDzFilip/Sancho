@@ -57,4 +57,4 @@ The deterministic regression suite can also be run with:
 dotnet test Sancho.slnx -m:1
 ```
 
-Some recorded-audio tests require Windows Media Foundation and are skipped on Linux; the manual microphone check above is the Ubuntu acceptance test. This branch was prepared and tested on Windows; Ubuntu capture must be verified on the Ubuntu machine.
+Some recorded-audio tests require Windows Media Foundation and are skipped on Linux; the manual microphone check above is the Ubuntu acceptance test. Ubuntu 26.04 x64 verification on 2026-10-04: 150 automated tests passed and one Windows-only audio test was skipped. A separate ffmpeg-based check passed the stored recording through the real small-model Whisper/VAD pipeline and recognized the expected phrase. Startup, default microphone opening, model loading, and cancellation also passed. A live spoken-sentence check is still needed in the desktop session. The lifecycle test now allows up to five seconds for descendants to finish terminating and being reaped; surviving processes still fail.

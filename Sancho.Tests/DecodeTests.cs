@@ -4,6 +4,7 @@ using NAudio.Wave.SampleProviders;
 using Sancho.Console.Config;
 using Sancho.Console.Transcription;
 using Xunit;
+using System.Diagnostics;
 
 namespace Sancho.Tests;
 
@@ -23,9 +24,6 @@ public class DecodeTests
     [Fact]
     public async Task FixtureSentence_TranscribesKnownPhrase()
     {
-        if (!OperatingSystem.IsWindows())
-            Assert.Skip("Fixture conversion uses NAudio's Media Foundation reader (Windows).");
-
         var fixturesDir = Path.Combine(AppContext.BaseDirectory, "fixtures");
         var fixture = Directory.Exists(fixturesDir)
             ? Directory.GetFiles(fixturesDir)
@@ -40,7 +38,9 @@ public class DecodeTests
         if (!Directory.Exists(modelDir))
             Assert.Skip("Whisper model not downloaded yet — run sancho once (downloads small.en).");
 
-        var pcm = LoadAs24kMonoPcm16(fixture);
+        var pcm = OperatingSystem.IsWindows()
+            ? LoadAs24kMonoPcm16(fixture)
+            : await LoadWithFfmpegAsync(fixture, TestContext.Current.CancellationToken);
         var service = new LocalTranscriptionService(
             NullLogger<LocalTranscriptionService>.Instance,
             new LocalSttModels(NullLogger<LocalSttModels>.Instance, WhisperModels.Small));
@@ -68,6 +68,39 @@ public class DecodeTests
         }
 
         await Task.CompletedTask;
+    }
+
+    private static async Task<byte[]> LoadWithFfmpegAsync(string path, CancellationToken ct)
+    {
+        var start = new ProcessStartInfo("ffmpeg")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        foreach (var argument in new[] { "-v", "error", "-i", path, "-f", "s16le", "-ar", "24000", "-ac", "1", "pipe:1" })
+            start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start ffmpeg.");
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        using var output = new MemoryStream();
+        try
+        {
+            var error = process.StandardError.ReadToEndAsync(timeout.Token);
+            await process.StandardOutput.BaseStream.CopyToAsync(output, timeout.Token);
+            await process.WaitForExitAsync(timeout.Token);
+            Assert.True(process.ExitCode == 0, $"ffmpeg failed: {await error}");
+            Assert.True(output.Length > 0 && output.Length % 2 == 0, "Expected whole PCM16 samples.");
+            return output.ToArray();
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None);
+            }
+        }
     }
 
     /// <summary>Converts any Media Foundation-readable audio file (wav, m4a, mp3, ...) to 24 kHz mono PCM16.</summary>

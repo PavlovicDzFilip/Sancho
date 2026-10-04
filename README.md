@@ -24,7 +24,7 @@ Both installers:
 - install it for all users (`C:\Program Files\Sancho` on Windows, `/usr/local/bin` on macOS/Linux),
 - prompt for administrator/sudo rights.
 
-Requirements: an installed and authenticated CLI for your selected backend (`claude`, `codex`, `cursor-agent` or `agent`, or `hermes`), plus ffmpeg on macOS/Linux. Claude is the default. Sancho checks CLI availability before starting the assistant.
+Requirements: an installed and authenticated CLI for your selected backend (`claude`, `codex`, `cursor-agent` or `agent`, or `hermes`), plus ffmpeg on macOS/Linux. Linux microphone selection and meeting mode also use `pactl` (Ubuntu package `pulseaudio-utils`); the installer installs it. Claude is the default. Sancho checks CLI availability before starting the assistant.
 
 ## Usage
 
@@ -79,7 +79,7 @@ Config keys: `agent` (claude | cursor | hermes | codex | dummy), `model` (tiny |
 
 ## Known issues
 
-- **Built-in microphone on AMD Ryzen AI 300 laptops (kernel ≥ 6.16):** the `snd_acp_pdm` driver feeds a clipped, full-scale signal instead of real audio — an upstream driver bug ([Framework Community thread](https://community.frame.work/t/laptop13-ryzen-ai-340-internal-mic-in-fedora42-doesnt-work/75748), [sof-project#5714](https://github.com/thesofproject/linux/issues/5714)). Sancho detects the clipped signal and warns; use a USB or 3.5mm headset mic until a kernel/driver fix lands.
+- **Clipped microphone input:** excessive capture gain or microphone boost can saturate audio before Sancho receives it. The warning measures sustained full-scale samples and does not identify a CPU or driver. Lower input gain/boost or select another microphone.
 
 ## Building & Releasing
 

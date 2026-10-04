@@ -8,7 +8,7 @@ Install the .NET 10 SDK using [Microsoft's instructions for your Ubuntu version]
 
 ```bash
 sudo apt update
-sudo apt install git ffmpeg
+sudo apt install git ffmpeg pulseaudio-utils
 git clone --branch codex/ubuntu-transcription-test https://github.com/PavlovicDzFilip/Sancho.git
 cd Sancho
 dotnet --list-sdks
@@ -16,7 +16,7 @@ ffmpeg -version
 dotnet run --project Sancho.Console -- --agent dummy --model tiny --log
 ```
 
-Use an ordinary interactive desktop terminal, with your intended microphone selected as the default input in Ubuntu Sound settings. The first run restores dependencies and downloads the tiny English Whisper model and VAD model. Wait for that to finish before speaking. Tiny is a fast initial check; repeat with `--model small` if recognition accuracy is poor. Both models are English-only. Audio decoding and transcription run locally after the downloads.
+Use an ordinary interactive desktop terminal. When multiple inputs are available, Sancho offers a microphone picker, including connected headset microphones. Select your intended microphone and check the displayed device name. Disconnected analog ports and system-output monitors are excluded. The first run restores dependencies and downloads the tiny English Whisper model and VAD model. Wait for that to finish before speaking. Tiny is a fast initial check; repeat with `--model small` if recognition accuracy is poor. Both models are English-only. Audio decoding and transcription run locally after the downloads.
 
 If you already cloned the repository:
 
@@ -45,11 +45,15 @@ dotnet run --project Sancho.Console -- --notes --model tiny --log
 
 Recognized utterances are appended to `sancho-notes-YYYY-MM-DD.md` in the current directory.
 
+## Test meeting mode after microphone selection
+
+Run `sancho-transcription-test --meeting` on the configured laptop, or add `--meeting` to the source command above. Select your microphone, speak, and confirm your words are labeled `Me`. Play spoken audio through the desktop's default output (headphones recommended) and confirm those words are labeled `Others`. Stop with Ctrl+C and check capture stops. Linux meeting mode captures the default output's PulseAudio/PipeWire monitor; it does not substitute a microphone if no output monitor exists. Restart after changing the default output device.
+
 ## If it fails
 
 Send the Ubuntu version (`cat /etc/os-release`), architecture (`uname -m`), the command used, the visible error, and the relevant portion of `~/.sancho/sancho.log`. The log contains recognized speech; review it before sharing. `SANCHO_CONFIG_DIR` can change the log directory.
 
-Linux capture first uses the default PulseAudio/PipeWire microphone, with an ALSA fallback. Check the default input and mute state in Sound settings. If Sancho reports repeated full-scale microphone samples, lower the input volume in Sound settings or try another microphone. The warning is based on the audio signal and does not identify a CPU or driver. A high average volume alone does not count as clipping.
+Linux capture uses the selected PulseAudio/PipeWire source. If device listing is unavailable, Sancho announces default input capture with an ALSA fallback; install `pulseaudio-utils` to enable selection. Explicit selections never silently fall back to another microphone. Check the selected input and mute state in Sound settings. If Sancho reports repeated full-scale microphone samples, lower input volume or microphone boost, or try another microphone. The warning is based on the audio signal and does not identify a CPU or driver. A high average volume alone does not count as clipping.
 
 The deterministic regression suite can also be run with:
 
@@ -57,4 +61,6 @@ The deterministic regression suite can also be run with:
 dotnet test Sancho.slnx -m:1
 ```
 
-Some recorded-audio tests require Windows Media Foundation and are skipped on Linux; the manual microphone check above is the Ubuntu acceptance test. Ubuntu 26.04 x64 verification on 2026-10-04: 150 automated tests passed and one Windows-only audio test was skipped. A separate ffmpeg-based check passed the stored recording through the real small-model Whisper/VAD pipeline and recognized the expected phrase. Startup, default microphone opening, model loading, and cancellation also passed. A live spoken-sentence check is still needed in the desktop session. The lifecycle test now allows up to five seconds for descendants to finish terminating and being reaped; surviving processes still fail.
+The recorded-audio regression uses Windows Media Foundation on Windows and FFmpeg on Linux/macOS. It checks the stored recording through the real small-model Whisper/VAD pipeline when the model is installed. Live microphone and meeting checks above remain separate acceptance tests. The lifecycle test allows up to five seconds for descendants to finish terminating and being reaped; surviving processes still fail.
+
+Verification on Ubuntu 26.04 x64 on 2026-10-04: all 166 tests passed without skips. The microphone picker listed internal and Soundcore headset inputs, and the selected headset capture opened and stopped cleanly. An isolated output-monitor integration check transcribed the stored phrase as `Others` through the production capture and meeting pipeline. Live user acceptance of both inputs and simultaneous meeting speech remains pending.

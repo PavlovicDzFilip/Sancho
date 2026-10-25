@@ -8,6 +8,69 @@ namespace Sancho.Tests;
 public class HermesAgentTests
 {
     [Fact]
+    public async Task FragmentedTextIsJoinedWithoutChangingWhitespaceOrRepeatingResult()
+    {
+        var chunks = new[] { "Hel", "lo", " ", "world", "!\n", "\n", "  Next", ((char)13).ToString(), "\nline." };
+        var expected = string.Concat(chunks);
+        var lines = chunks.Select(text => JsonSerializer.Serialize(new { type = "text", text })).ToList();
+        lines.Add(JsonSerializer.Serialize(new { type = "result", exit_code = 0, session_id = "id", text = expected }));
+        await Exercise(lines.ToArray(), 0, 2, (events, _, _) =>
+        {
+            Assert.DoesNotContain(events, e => e is AgentEvent.Error);
+            Assert.Equal(new[] { expected, expected }, events.OfType<AgentEvent.AssistantText>().Select(e => e.Text));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task BufferedTextPreservesOrderAroundTools()
+    {
+        await Exercise(new[]
+        {
+            "{\"type\":\"text\",\"text\":\"Checking \"}",
+            "{\"type\":\"text\",\"text\":\"now.\"}",
+            "{\"type\":\"tool_use\",\"name\":\"read_file\"}",
+            "{\"type\":\"text\",\"text\":\"Still \"}",
+            "{\"type\":\"text\",\"text\":\"checking.\"}",
+            "{\"type\":\"tool_result\",\"name\":\"read_file\"}",
+            "{\"type\":\"text\",\"text\":\"All \"}",
+            "{\"type\":\"text\",\"text\":\"done.\"}",
+            "{\"type\":\"result\",\"exit_code\":0,\"session_id\":\"id\"}"
+        }, 0, 1, (events, _, _) =>
+        {
+            Assert.DoesNotContain(events, e => e is AgentEvent.Error);
+            Assert.Equal(new AgentEvent[]
+            {
+                new AgentEvent.AssistantText("Checking now."),
+                new AgentEvent.ToolUse("read_file", ""),
+                new AgentEvent.AssistantText("Still checking."),
+                new AgentEvent.ToolResult("read_file", false),
+                new AgentEvent.AssistantText("All done.")
+            }, events.Where(e => e is AgentEvent.AssistantText or AgentEvent.ToolUse or AgentEvent.ToolResult));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Theory]
+    [InlineData("{broken")]
+    [InlineData("")]
+    public async Task InterruptedStreamKeepsBufferedPartialText(string lastLine)
+    {
+        await Exercise(new[]
+        {
+            "{\"type\":\"text\",\"text\":\"Partial \"}",
+            "{\"type\":\"text\",\"text\":\"reply\"}",
+            lastLine
+        }, 0, 1, (events, _, _) =>
+        {
+            Assert.Equal("Partial reply", Assert.Single(events.OfType<AgentEvent.AssistantText>()).Text);
+            Assert.Contains(events, e => e is AgentEvent.Error);
+            Assert.True(events.FindIndex(e => e is AgentEvent.AssistantText) < events.FindIndex(e => e is AgentEvent.Error));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
     public async Task WorkspaceDiagnosticsDoNotBreakStructuredTurns()
     {
         await Exercise(new[]

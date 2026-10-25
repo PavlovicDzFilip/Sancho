@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
@@ -150,6 +151,16 @@ public sealed class HermesAgentService : AgentService
         var stderrTask = process.StandardError.ReadToEndAsync();
         var terminal = false;
         var emittedText = false;
+        var pendingText = new StringBuilder();
+        // Hermes text events are deltas, but the display renders each AssistantText
+        // as a complete block. Join adjacent deltas without adding separators.
+        void FlushText()
+        {
+            if (pendingText.Length == 0) return;
+            writer.TryWrite(new AgentEvent.AssistantText(pendingText.ToString()));
+            pendingText.Clear();
+        }
+
         string? failure = null;
         try
         {
@@ -169,16 +180,19 @@ public sealed class HermesAgentService : AgentService
                 {
                     case "text":
                         var text = String(root, "text");
-                        if (text.Length > 0) { emittedText = true; writer.TryWrite(new AgentEvent.AssistantText(text)); }
+                        if (text.Length > 0) { emittedText = true; pendingText.Append(text); }
                         break;
                     case "tool_use":
+                        FlushText();
                         writer.TryWrite(new AgentEvent.ToolUse(String(root, "name"), root.TryGetProperty("input", out var input) ? input.GetRawText() : ""));
                         break;
                     case "tool_result":
+                        FlushText();
                         var toolId = String(root, "tool_call_id");
                         writer.TryWrite(new AgentEvent.ToolResult(toolId.Length > 0 ? toolId : String(root, "name"), root.TryGetProperty("is_error", out var error) && error.ValueKind == JsonValueKind.True));
                         break;
                     case "result":
+                        FlushText();
                         terminal = true;
                         if (root.TryGetProperty("exit_code", out var code) && code.TryGetInt32(out var value) && value != 0 || !string.IsNullOrEmpty(String(root, "error")))
                             failure = String(root, "error") is { Length: > 0 } detail ? detail : "Hermes reported a failed turn.";
@@ -195,7 +209,13 @@ public sealed class HermesAgentService : AgentService
             if (_sessionId is null) failure ??= "Hermes did not report a session ID; continuation cannot be guaranteed.";
             if (failure is not null) throw new InvalidOperationException(failure);
         }
-        finally { await owned.StopAsync(); await stderrTask; }
+        finally
+        {
+            // Keep any partial reply if the stream ends or fails before a result.
+            FlushText();
+            await owned.StopAsync();
+            await stderrTask;
+        }
     }
 
     private static string String(JsonElement element, string name) =>

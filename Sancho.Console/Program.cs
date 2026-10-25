@@ -120,9 +120,12 @@ static string? ResolveAgent(CliArgs cliArgs, SanchoConfig stored)
         return null; // notes mode never involves an agent
 
     var available = AgentDetector.Supported
-        .Where(a => a.Name == "cursor"
-            ? CursorAgentService.IsInstalled()
-            : AgentDetector.IsOnPath(a.Executable))
+        .Where(a => a.Name switch
+        {
+            "cursor" => CursorAgentService.IsInstalled(),
+            "codex" => CodexAgentService.IsInstalled(),
+            _ => AgentDetector.IsOnPath(a.Executable)
+        })
         .ToList();
 
     switch (available.Count)

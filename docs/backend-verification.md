@@ -1,5 +1,15 @@
 # Backend verification
 
+## Codex Windows npm verification (2026-10-25)
+
+Installed official `@openai/codex` 0.164.0 in the user's npm prefix and reused the existing authenticated CLI session. A real adapter check reproduced the Windows launch failure before the fix: `VerifyAvailable` could not run npm's command shim despite `codex --version` working in a shell.
+
+The fix resolves native executables or npm's official `bin/codex.js` entrypoint plus Node, using process/user PATH entries on Windows. Discovery, version/login checks, and conversation turns use the same resolver; no command shell is introduced. Added deterministic coverage for shell-sensitive paths/arguments, Node in a separate PATH directory, native launchers, and incomplete npm installations.
+
+The full .NET 10 test suite passed on Windows: 199 passed, 1 Unix-only test skipped, 0 failed. An authenticated live check through `CodexAgentService`, using the normal machine/user PATH rather than Hermes's managed tooling PATH, passed file writing in a disposable Git workspace, `.sancho.md` instructions, two-turn token recall, native session discovery and transcript reading, and recall after recreating the adapter with the selected native session ID. The user's default agent configuration was not changed. Microphone-to-Codex interaction and live Linux/macOS Codex execution were not exercised in this check.
+
+## General verification
+
 Build and run the deterministic suite with the .NET 10 SDK:
 
 ```powershell

@@ -54,6 +54,23 @@ Both installers:
 
 Requirements: an installed and authenticated CLI for your selected backend (`claude`, `codex`, `cursor-agent` or `agent`, or `hermes`), plus ffmpeg on macOS/Linux. Linux microphone selection and meeting mode also use `pactl` (Ubuntu package `pulseaudio-utils`); the installer installs it. Unset backend selection is auto-detected on first run. Sancho checks CLI availability before starting the assistant.
 
+### Codex backend
+
+Install the official [Codex CLI](https://github.com/openai/codex) with Node.js/npm, then authenticate:
+
+```bash
+npm install -g @openai/codex
+codex login
+codex login status
+sancho --agent codex
+```
+
+Use `sancho config set agent codex` to make it the default, or `sancho --agent codex --continue` to pick a previous Codex session for this directory. Sancho passes `.sancho.md` as developer instructions and resumes the same native Codex thread between speech turns.
+
+Windows npm installations are supported: Sancho launches the official JavaScript entrypoint with Node directly rather than executing the command shim through a shell. Native Codex executables and executable Unix launchers are also supported. Node must remain installed and on your PATH for npm installations.
+
+**Permissions:** Sancho currently runs Codex with `--dangerously-bypass-approvals-and-sandbox`, matching its other unattended agent backends. Use it only in trusted workspaces; generated commands are not sandboxed or individually approved.
+
 ## Usage
 
 ```bash

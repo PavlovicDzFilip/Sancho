@@ -5,6 +5,88 @@ using Xunit;
 namespace Sancho.Tests;
 public class CodexAgentTests
 {
+    [Fact]
+    public void WindowsNpmInstallLaunchesNodeWithoutShellParsing()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "sancho codex & launch " + Guid.NewGuid());
+        var entrypoint = Path.Combine(root, "node_modules", "@openai", "codex", "bin", "codex.js");
+        Directory.CreateDirectory(Path.GetDirectoryName(entrypoint)!);
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "codex.cmd"), "@rem npm shim");
+            File.WriteAllText(Path.Combine(root, "node.exe"), "fixture");
+            File.WriteAllText(entrypoint, "// official entrypoint fixture");
+            var launch = CodexCli.ResolveLaunch(new[] { root }, windows: true);
+            var prompt = "literal & | < > %PATH% \"quotes\"\nnext line";
+            var info = launch.CreateStartInfo(new AgentLaunchOptions { WorkingDirectory = root }, new[] { "exec", "--json", prompt });
+            Assert.Equal(Path.Combine(root, "node.exe"), info.FileName);
+            Assert.Equal(new[] { entrypoint, "exec", "--json", prompt }, info.ArgumentList);
+            Assert.False(info.UseShellExecute);
+            Assert.True(info.RedirectStandardInput);
+            Assert.Equal(root, info.WorkingDirectory);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void WindowsNpmInstallFindsNodeInAnotherPathDirectory()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "sancho-codex-node-" + Guid.NewGuid());
+        var npm = Path.Combine(root, "npm");
+        var node = Path.Combine(root, "node");
+        var entrypoint = Path.Combine(npm, "node_modules", "@openai", "codex", "bin", "codex.js");
+        Directory.CreateDirectory(Path.GetDirectoryName(entrypoint)!);
+        Directory.CreateDirectory(node);
+        try
+        {
+            File.WriteAllText(Path.Combine(npm, "codex.cmd"), "fixture");
+            File.WriteAllText(entrypoint, "fixture");
+            File.WriteAllText(Path.Combine(node, "node.exe"), "fixture");
+            var launch = CodexCli.ResolveLaunch(new[] { npm, node }, windows: true);
+            Assert.Equal(Path.Combine(node, "node.exe"), launch.Executable);
+            Assert.Equal(new[] { entrypoint }, launch.PrefixArguments);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData(true, ".exe")]
+    [InlineData(false, "")]
+    public void NativeInstallLaunchesDirectly(bool windows, string extension)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "sancho-codex-native-" + Guid.NewGuid());
+        Directory.CreateDirectory(root);
+        var executable = Path.Combine(root, "codex" + extension);
+        try
+        {
+            File.WriteAllText(executable, "fixture");
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            var launch = CodexCli.ResolveLaunch(new[] { root }, windows);
+            Assert.Equal(executable, launch.Executable);
+            Assert.Empty(launch.PrefixArguments);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void IncompleteWindowsNpmInstallFailsWithoutRunningWrapper(bool entrypointExists, bool nodeExists)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "sancho-codex-missing-" + Guid.NewGuid());
+        var entrypoint = Path.Combine(root, "node_modules", "@openai", "codex", "bin", "codex.js");
+        Directory.CreateDirectory(Path.GetDirectoryName(entrypoint)!);
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "codex.cmd"), "fixture");
+            if (entrypointExists) File.WriteAllText(entrypoint, "fixture");
+            if (nodeExists) File.WriteAllText(Path.Combine(root, "node.exe"), "fixture");
+            Assert.Throws<InvalidOperationException>(() => CodexCli.ResolveLaunch(new[] { root }, windows: true));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private static async Task<(List<AgentEvent> Events, string[] Arguments, string Input)> Run(string[] lines, string? resumed = null, int turns = 1, string sentence = "-literal prompt", bool startupFlood = false)
     {
         var dir = Path.Combine(Path.GetTempPath(), "sancho-codex-" + Guid.NewGuid());

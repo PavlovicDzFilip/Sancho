@@ -118,20 +118,19 @@ public sealed class CodexAgentService : AgentService
     /// <inheritdoc />
     public override void VerifyAvailable() => VerifyAvailable(Executable);
 
+    /// <summary>Detects native and npm installations without requiring authentication.</summary>
+    public static bool IsInstalled() => CodexCli.IsInstalled();
+
     /// <summary>Checks the CLI and its login status, including OS credential-store authentication.</summary>
     public static void VerifyAvailable(string executable = Executable)
     {
         try
         {
-            var psi = new ProcessStartInfo(executable, "--version")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
+            var options = new AgentLaunchOptions { Executable = executable == Executable ? null : executable };
+            var psi = CodexCli.CreateStartInfo(options, ["--version"]);
             using var proc = Process.Start(psi);
             if (proc is null) throw new InvalidOperationException("Could not start codex.");
+            proc.StandardInput.Close();
             var versionOutput = proc.StandardOutput.ReadToEndAsync();
             var versionError = proc.StandardError.ReadToEndAsync();
             if (!proc.WaitForExit(5_000))
@@ -152,9 +151,10 @@ public sealed class CodexAgentService : AgentService
                 "Could not find `codex`. Install the Codex CLI from OpenAI and try again.");
         }
 
-        using var login = Process.Start(new ProcessStartInfo(executable, "login status")
-        { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true });
+        using var login = Process.Start(CodexCli.CreateStartInfo(
+            new AgentLaunchOptions { Executable = executable == Executable ? null : executable }, ["login", "status"]));
         if (login is null) throw new InvalidOperationException("Could not check codex login status.");
+        login.StandardInput.Close();
         var output = login.StandardOutput.ReadToEndAsync();
         var error = login.StandardError.ReadToEndAsync();
         if (!login.WaitForExit(5_000))
@@ -207,7 +207,7 @@ public sealed class CodexAgentService : AgentService
 
     private async Task RunTurnAsync(ChannelWriter<AgentEvent> writer, string sentence, CancellationToken ct)
     {
-        var psi = _launchOptions.CreateStartInfo(Executable, []);
+        var psi = CodexCli.CreateStartInfo(_launchOptions, []);
         psi.ArgumentList.Add("exec");
         if (_sessionId is not null)
         {

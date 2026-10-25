@@ -261,7 +261,7 @@ public sealed class Orchestrator(
                         break;
 
                     case AgentEvent.Status(var msg, _):
-                        display.History.AppendLine(msg);
+                        display.History.AppendLine(msg, Display.HistoryColor.Dim);
                         break;
 
                     case AgentEvent.Error(var msg):

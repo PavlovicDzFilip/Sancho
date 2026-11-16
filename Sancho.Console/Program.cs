@@ -180,28 +180,28 @@ static AgentService CreateClaudeAgent(string? resumeSessionId, IServiceProvider 
     ClaudeCodeAgentService.VerifyAvailable("claude");
     return new ClaudeCodeAgentService(
         "claude", null, resumeSessionId,
-        sp.GetRequiredService<ILogger<ClaudeCodeAgentService>>());
+        sp.GetRequiredService<ILogger<ClaudeCodeAgentService>>(), sp.GetRequiredService<AgentLaunchOptions>());
 }
 
 static AgentService CreateCursorAgent(string? resumeSessionId, IServiceProvider sp)
 {
     CursorAgentService.VerifyAvailable();
     return new CursorAgentService(
-        resumeSessionId, sp.GetRequiredService<ILogger<CursorAgentService>>());
+        resumeSessionId, sp.GetRequiredService<ILogger<CursorAgentService>>(), sp.GetRequiredService<AgentLaunchOptions>());
 }
 
 static AgentService CreateHermesAgent(string? resumeSessionId, IServiceProvider sp)
 {
     HermesAgentService.VerifyAvailable();
     return new HermesAgentService(
-        resumeSessionId, sp.GetRequiredService<ILogger<HermesAgentService>>());
+        resumeSessionId, sp.GetRequiredService<ILogger<HermesAgentService>>(), sp.GetRequiredService<AgentLaunchOptions>());
 }
 
 static AgentService CreateCodexAgent(string? resumeSessionId, IServiceProvider sp)
 {
     CodexAgentService.VerifyAvailable();
     return new CodexAgentService(
-        resumeSessionId, sp.GetRequiredService<ILogger<CodexAgentService>>());
+        resumeSessionId, sp.GetRequiredService<ILogger<CodexAgentService>>(), sp.GetRequiredService<AgentLaunchOptions>());
 }
 
 /// <summary>Session list for the selected agent, for the --continue picker.</summary>
@@ -217,6 +217,17 @@ static IReadOnlyList<AgentService.SessionSummary> ListAgentSessions(string agent
 
 async Task<int> Run(LogFileWriter? logFile)
 {
+    string targetDir;
+    try
+    {
+        targetDir = cliArgs.ResolveWorkingDirectory();
+    }
+    catch (UsageError ex)
+    {
+        AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
+        return 2;
+    }
+
     if (cliArgs.Meeting && !OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
     {
         AnsiConsole.MarkupLine("[red]--meeting supports Windows and Linux (PulseAudio/PipeWire). macOS system audio capture is not supported yet.[/]");
@@ -233,6 +244,12 @@ async Task<int> Run(LogFileWriter? logFile)
     var agentName = ResolveAgent(cliArgs, stored);
     if (agentName is null && !cliArgs.Notes)
         return 2;
+
+    if (agentName == "dummy" && cliArgs.AgentArguments.Length > 0)
+    {
+        AnsiConsole.MarkupLine("[red]The dummy assistant does not accept agent arguments.[/]");
+        return 2;
+    }
 
     if (!cliArgs.Notes && agentName == "dummy" && cliArgs.Continue)
     {
@@ -263,8 +280,6 @@ async Task<int> Run(LogFileWriter? logFile)
             return 2;
         }
     }
-
-    var targetDir = Directory.GetCurrentDirectory();
 
     // Notes mode only transcribes — no system prompt file, no agent session.
     // Real agent factories verify CLI availability. Dummy needs no prompt or CLI.
@@ -314,6 +329,11 @@ async Task<int> Run(LogFileWriter? logFile)
     services.AddSingleton<LocalTranscriptionService>();
 
     services.AddSingleton(cliArgs);
+    services.AddSingleton(new AgentLaunchOptions
+    {
+        WorkingDirectory = targetDir,
+        AgentArguments = cliArgs.AgentArguments
+    });
 
     if (cliArgs.Notes)
     {

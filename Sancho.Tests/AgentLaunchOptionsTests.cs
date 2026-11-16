@@ -8,6 +8,13 @@ namespace Sancho.Tests;
 public class AgentLaunchOptionsTests
 {
     [Fact]
+    public void CallerArgumentsAreNotAddedToProbes()
+    {
+        var options = new AgentLaunchOptions { AgentArguments = ["--caller-only"] };
+        Assert.Equal(new[] { "--version" }, options.CreateStartInfo("unused", ["--version"]).ArgumentList);
+    }
+
+    [Fact]
     public async Task ShellFreeLaunchPreservesArgumentsDirectoryAndInput()
     {
         var options = new AgentLaunchOptions

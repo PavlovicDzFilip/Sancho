@@ -209,6 +209,8 @@ public sealed class CodexAgentService : AgentService
     {
         var psi = CodexCli.CreateStartInfo(_launchOptions, []);
         psi.ArgumentList.Add("exec");
+        // Exec-level options must precede the resume subcommand on subsequent turns.
+        _launchOptions.AppendAgentArguments(psi);
         if (_sessionId is not null)
         {
             psi.ArgumentList.Add("resume");
@@ -216,7 +218,6 @@ public sealed class CodexAgentService : AgentService
         }
 
         psi.ArgumentList.Add("--json");
-        psi.ArgumentList.Add("--dangerously-bypass-approvals-and-sandbox");
         var instructions = _launchOptions.ReadInstructions();
         if (instructions.Length > 0)
         {

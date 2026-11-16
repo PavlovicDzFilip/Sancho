@@ -85,7 +85,7 @@ public sealed class Orchestrator(
 
         if (NotesMode)
         {
-            var notesPath = Path.Combine(Directory.GetCurrentDirectory(),
+            var notesPath = Path.Combine(cliArgs.ResolveWorkingDirectory(),
                 $"sancho-notes-{DateTime.Now:yyyy-MM-dd}.md");
             _notes = new StreamWriter(notesPath, append: true, Encoding.UTF8) { AutoFlush = true };
             display.History.AppendLine(

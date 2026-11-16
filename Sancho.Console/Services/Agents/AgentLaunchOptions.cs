@@ -9,6 +9,14 @@ public sealed record AgentLaunchOptions
     public string? Instructions { get; init; }
     public string? Executable { get; init; }
     public IReadOnlyList<string> PrefixArguments { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> AgentArguments { get; init; } = Array.Empty<string>();
+
+    /// <summary>Append caller options to agent turns, never discovery or login probes.</summary>
+    public void AppendAgentArguments(ProcessStartInfo info)
+    {
+        foreach (var argument in AgentArguments)
+            info.ArgumentList.Add(argument);
+    }
 
     /// <summary>Resolve instructions once, in the target directory, without changing the process-wide directory.</summary>
     public string ReadInstructions()

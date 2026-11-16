@@ -28,6 +28,52 @@ public class AgentLifecycleTests
     [InlineData("codex")]
     [InlineData("cursor")]
     [InlineData("hermes")]
+    public async Task CallerArgumentsReachEachBackendVerbatim(string backend)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "sancho-forward-" + Guid.NewGuid());
+        Directory.CreateDirectory(directory);
+        var script = Path.Combine(directory, "script.jsonl");
+        var capture = Path.Combine(directory, "arguments.json");
+        string[] arguments = ["--model", "caller \"model\"", "", "$(literal)", "--", "tail"];
+        var completion = backend switch
+        {
+            "claude" => "{\"type\":\"result\",\"subtype\":\"success\"}",
+            "codex" => "{\"type\":\"turn.completed\"}",
+            _ => "{\"type\":\"result\",\"session_id\":\"resumed-test\",\"exit_code\":0}"
+        };
+        var steps = new List<object> { new { kind = "capture", value = capture } };
+        if (backend is "claude" or "codex") steps.Add(new { kind = "read", value = "" });
+        steps.Add(new { kind = "stdout", value = completion });
+        if (backend == "claude") steps.Add(new { kind = "delay", value = "60000" });
+        await File.WriteAllLinesAsync(script, steps.Select(s => JsonSerializer.Serialize(s)), TestContext.Current.CancellationToken);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var options = Options("script", script) with { WorkingDirectory = directory, AgentArguments = arguments };
+        var agent = Create(backend, options);
+        var sent = false;
+        try
+        {
+            await foreach (var evt in agent.RunAsync(timeout.Token))
+            {
+                if (evt is not AgentEvent.Ready) continue;
+                if (sent) break;
+                sent = true;
+                agent.Send("spoken input");
+            }
+            using var json = JsonDocument.Parse(await File.ReadAllTextAsync(capture, timeout.Token));
+            var actual = json.RootElement.GetProperty("arguments").EnumerateArray().Select(a => a.GetString()).ToArray();
+            var start = Array.IndexOf(actual, "--model");
+            Assert.True(start >= 0);
+            Assert.Equal(arguments, actual.Skip(start).Take(arguments.Length));
+            Assert.Equal(directory, json.RootElement.GetProperty("directory").GetString());
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Theory]
+    [InlineData("claude")]
+    [InlineData("codex")]
+    [InlineData("cursor")]
+    [InlineData("hermes")]
     public async Task StartupFailureReportsErrorAndClosesStream(string backend)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));

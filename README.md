@@ -69,7 +69,7 @@ Use `sancho config set agent codex` to make it the default, or `sancho --agent c
 
 Windows npm installations are supported: Sancho launches the official JavaScript entrypoint with Node directly rather than executing the command shim through a shell. Native Codex executables and executable Unix launchers are also supported. Node must remain installed and on your PATH for npm installations.
 
-**Permissions:** Sancho currently runs Codex with `--dangerously-bypass-approvals-and-sandbox`, matching its other unattended agent backends. Use it only in trusted workspaces; generated commands are not sandboxed or individually approved.
+**Permissions:** Sancho does not add approval-bypass or sandbox flags. The native CLI's defaults and configuration apply unless you explicitly pass options after `--`.
 
 ## Usage
 
@@ -80,10 +80,14 @@ sancho --notes       # dictation: append to sancho-notes-YYYY-MM-DD.md, no agent
 sancho --meeting     # transcribe mic + system audio, labeled Me:/Others: (Windows/Linux)
 sancho --agent codex # use a different agent for this run
 sancho --model base  # smaller/faster transcription model for this run
+sancho --dir ./project # select a working directory (defaults to the current directory)
+sancho --agent claude --dir ./project -- --dangerously-skip-permissions
 sancho --help
 ```
 
 Agents: `claude`, `cursor`, `hermes`, `codex` — on a fresh install Sancho auto-detects whichever are on your PATH (picking one automatically, or asking if there are several) and saves your choice to the config. The first run of each model size downloads it, so give it a minute.
+
+`--dir` applies to the agent process, `.sancho.md`, session selection, and notes files. The directory must already exist; relative paths resolve from the current directory. All existing Sancho options remain available before `--`. Everything after the first `--` is forwarded as individual arguments without shell interpretation, including flags named `--model` or `--help`; use your shell's normal quoting for values containing spaces. Passthrough is not accepted with `config`, `--notes`, or the dummy backend. Caller options are applied to agent turns, not availability or login checks. Do not override the streaming/input/session options Sancho needs for its protocol. Native CLI errors and permission denials remain the caller's responsibility.
 
 > **Note:** Linux microphone selection and meeting capture require PulseAudio/PipeWire and `pactl`. macOS meeting capture is not supported yet.
 
@@ -117,11 +121,11 @@ sancho config set agent claude
 
 Config keys: `agent` (claude | cursor | hermes | codex | dummy; auto-detected from your PATH when unset), `model` (tiny | base | small | medium). Precedence: defaults < config file < flags.
 
-The system prompt is read from `.sancho.md` in the directory you run Sancho from. If the file is missing, Sancho creates it with a default prompt and tells you — edit it to customize how the agent behaves on your project.
+The system prompt is read from `.sancho.md` in the working directory (`--dir`, or the current directory when omitted). If the file is missing, Sancho creates it with a default prompt and tells you — edit it to customize how the agent behaves on your project.
 
 Speech spoken while the assistant is busy is queued and joined into the next turn when it is ready. Each backend reports replies, tools, and errors through the same display. Ctrl+C stops capture and owned assistant processes. If the backend stops unexpectedly, Sancho stops capture and keeps unsent speech visible.
 
-All four backends run in **YOLO mode**, allowing commands and edits without approval prompts. Run Sancho only in a directory where you authorize those actions. Authentication, available models, tools, and MCP configuration remain specific to each native CLI.
+Permission and sandbox policy is entirely caller-controlled. Sancho does not force YOLO mode, trust the workspace, or approve MCP servers automatically. If you choose unattended/bypass flags after `--`, use them only in a trusted workspace where you authorize those actions. Sancho does not implement interactive approval prompts; the native CLI may deny actions requiring approval. Authentication, available models, tools, and MCP configuration remain specific to each native CLI.
 
 `.sancho.md` is appended to Claude's native system prompt, passed as Codex developer instructions, and prepended to each Cursor/Hermes turn. Native instruction precedence and context limits can differ. Session IDs belong to their backend: changing `--agent` starts or resumes that backend's own conversation, and does not transfer history between providers. Cursor's session picker combines native CLI chat metadata and local IDE transcripts. Native CLI conversations resume by ID, but their binary history is not displayed by Sancho; IDE JSONL transcripts can be displayed. Hermes session summaries and exports depend on its CLI output.
 

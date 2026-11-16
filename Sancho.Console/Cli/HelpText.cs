@@ -1,6 +1,8 @@
+using System.CommandLine;
+
 namespace Sancho.Console.Cli;
 
-/// <summary>Static help and version text for the CLI surface.</summary>
+/// <summary>Generated command help, supplemental usage notes, and the public version.</summary>
 public static class HelpText
 {
     /// <summary>
@@ -9,33 +11,18 @@ public static class HelpText
     /// </summary>
     public const string Version = "0.1.0";
 
-    /// <summary>Body shown by <c>--help</c>.</summary>
-    public const string Body = """
-        Sancho — voice assistant: microphone → transcription → Claude CLI.
+    public static string Render(params string[] commandPath)
+    {
+        using var output = new StringWriter();
+        CliSchema.CreateCommand().Parse([.. commandPath, "--help"], CliSchema.ParserConfiguration())
+            .Invoke(new InvocationConfiguration { Output = output, Error = output });
+        return output.ToString() + (commandPath.Length == 0 ? Environment.NewLine + Notes + Environment.NewLine : "");
+    }
 
-        Usage:
-          sancho                          Start listening in the current directory
-          sancho --continue               Resume one of your previous sessions (alias: -c)
-          sancho config get               Show config
-          sancho config set <key> <value> Persist one config key
-
-        Options:
-          --agent <name>                   Agent backend: claude, cursor, hermes, codex or dummy
-                                           (auto-detected from your PATH when not configured)
-                                           dummy echoes speech locally; choose it explicitly; no account needed
-          --model <size>                   Whisper model size: tiny, base, small (default) or medium
-          --dir <path>                     Working directory (default: current directory)
-          -- <agent arguments...>          Pass all remaining arguments directly to the agent
-                                           Permission/sandbox flags are caller-controlled
-          --meeting                        Transcribe your mic + the system output (other meeting
-                                           participants) — lines labeled Me/Others; Windows or Linux
-                                           Linux needs PulseAudio/PipeWire and pactl (pulseaudio-utils)
-          --notes                          Transcribe to sancho-notes-YYYY-MM-DD.md in the working
-                                           directory — Claude is not involved
-          --log                            Write a run log (console mirror + debug diagnostics + agent I/O)
-                                           to ~/.sancho/sancho.log — this run only, not persisted
-          -h, --help                      Show this help
-          -v, --version                   Show version
+    private const string Notes = """
+        Agent arguments:
+          Everything after -- is passed directly to the selected agent, unchanged.
+          Permission and sandbox flags are caller-controlled.
 
         Prompt:
           .sancho.md in the working directory selected by --dir
@@ -56,5 +43,9 @@ public static class HelpText
           File:  ~/.sancho/config.json    (SANCHO_CONFIG_DIR overrides the directory)
           Keys:  agent                    (claude | cursor | hermes | codex | dummy; auto-detected when unset)
                  model                    (tiny | base | small | medium)
+
+        Linux capture needs ffmpeg; microphone selection and meeting mode need
+        PulseAudio/PipeWire and pactl (pulseaudio-utils). macOS meeting capture
+        is not supported. Start without options to listen in the current directory.
         """;
 }

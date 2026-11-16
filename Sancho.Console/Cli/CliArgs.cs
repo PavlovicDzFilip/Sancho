@@ -1,3 +1,5 @@
+using System.CommandLine;
+
 namespace Sancho.Console.Cli;
 
 /// <summary>Thrown for malformed command lines; the message is shown with a usage hint.</summary>
@@ -18,6 +20,7 @@ public sealed record CliArgs(
 {
     public string? DirectoryPath { get; init; }
     public string[] AgentArguments { get; init; } = [];
+    public string[] HelpCommandPath { get; init; } = [];
 
     public string ResolveWorkingDirectory()
     {
@@ -35,119 +38,60 @@ public sealed record CliArgs(
         }
     }
 
-    /// <summary>
-    /// Parses the command line: <c>-c</c>, <c>--log</c>, <c>--notes</c>,
-    /// <c>--meeting</c>, <c>--agent</c>, <c>--model</c>, <c>--dir</c>, and the <c>config</c>
-    /// subcommand. Arguments after <c>--</c> belong to the agent.
-    /// Unknown Sancho flags/commands throw <see cref="UsageError"/>.
-    /// </summary>
+    /// <summary>Parse only Sancho arguments; the raw suffix after the first -- never reaches the library.</summary>
     public static CliArgs Parse(string[] args)
     {
-        var continueSession = false;
-        string? agent = null;
-        string? model = null;
-        string? directory = null;
-        string[] agentArguments = [];
-        var log = false;
-        var notes = false;
-        var meeting = false;
-        var positional = new List<string>();
-
-        for (var i = 0; i < args.Length; i++)
+        var separator = Array.IndexOf(args, "--");
+        var sanchoArgs = separator < 0 ? args : args[..separator];
+        var agentArguments = separator < 0 ? [] : args[(separator + 1)..];
+        // Clearing library directives does not stop its tokenizer from silently skipping them.
+        if (sanchoArgs.FirstOrDefault() is { } first && first.StartsWith('[') && first.EndsWith(']'))
+            throw new UsageError($"Unknown command '{first}'.");
+        var root = CliSchema.CreateCommand(sanchoArgs);
+        var parsed = root.Parse(sanchoArgs, CliSchema.ParserConfiguration());
+        var help = parsed.GetResult("--help") is not null;
+        var version = parsed.GetResult("--version") is not null;
+        if (help && version)
         {
-            var arg = args[i];
-            if (arg == "--")
-            {
-                agentArguments = args[(i + 1)..];
-                break;
-            }
-            switch (arg)
-            {
-                case "-h" or "--help":
-                    return new CliArgs(false, null, null, null, [], true, false, false, false, false);
-                case "-v" or "--version":
-                    return new CliArgs(false, null, null, null, [], false, true, false, false, false);
-                case "-c" or "--continue":
-                    continueSession = true;
-                    break;
-                case "--log":
-                    log = true;
-                    break;
-                case "--notes":
-                    notes = true;
-                    break;
-                case "--meeting":
-                    meeting = true;
-                    break;
-                default:
-                    if (arg.StartsWith("--", StringComparison.Ordinal))
-                    {
-                        var (name, inlineValue) = SplitFlag(arg);
-                        if (name == "--agent")
-                        {
-                            agent = ReadFlagValue(name, inlineValue, args, ref i);
-                        }
-                        else if (name == "--model")
-                        {
-                            model = ReadFlagValue(name, inlineValue, args, ref i);
-                        }
-                        else if (name == "--dir")
-                        {
-                            directory = ReadFlagValue(name, inlineValue, args, ref i);
-                            if (string.IsNullOrWhiteSpace(directory))
-                                throw new UsageError("'--dir' requires a non-empty directory.");
-                        }
-                        else
-                        {
-                            throw new UsageError($"Unknown option '{name}'.");
-                        }
-                    }
-                    else
-                    {
-                        positional.Add(arg);
-                    }
-                    break;
-            }
+            var tokens = parsed.Tokens.ToList();
+            var helpToken = parsed.GetResult(root.Options.Single(option => option.Name == "--help"))!.IdentifierToken;
+            var versionToken = parsed.GetResult(root.Options.Single(option => option.Name == "--version"))!.IdentifierToken;
+            help = tokens.IndexOf(helpToken!) < tokens.IndexOf(versionToken!);
+            version = !help;
         }
+        var command = parsed.CommandResult.Command;
+        var commandPath = command == root ? Array.Empty<string>()
+            : command.Name == "config" ? ["config"] : new[] { "config", command.Name };
 
-        if (positional.Count > 0)
+        if (help || version)
+            return new CliArgs(false, null, null, null, [], help, version, false, false, false)
+            {
+                HelpCommandPath = commandPath
+            };
+
+        if (parsed.Errors.Count > 0)
+            throw new UsageError(string.Join(Environment.NewLine, parsed.Errors.Select(error => error.Message)));
+
+        var agent = parsed.GetValue<string?>("--agent");
+        var notes = parsed.GetValue<bool>("--notes");
+        if (agentArguments.Length > 0 &&
+            (command != root || notes || string.Equals(agent, "dummy", StringComparison.OrdinalIgnoreCase)))
+            throw new UsageError("Agent arguments require an agent backend, not config, notes mode or dummy.");
+
+        string[] commandArgs = command.Name switch
         {
-            if (agentArguments.Length > 0)
-                throw new UsageError("Agent arguments cannot be used with a subcommand.");
-            if (positional[0] is not "config")
-                throw new UsageError($"Unknown command '{positional[0]}'.");
-            return new CliArgs(continueSession, agent, model, "config", positional.Skip(1).ToArray(), false, false, log, notes, meeting);
-        }
-
-        if (agentArguments.Length > 0 && (notes || agent == "dummy"))
-            throw new UsageError("Agent arguments require an agent backend, not notes mode or dummy.");
-
-        return new CliArgs(continueSession, agent, model, null, [], false, false, log, notes, meeting)
-        {
-            DirectoryPath = directory,
-            AgentArguments = agentArguments
+            "get" => parsed.GetValue<string?>("key") is { } key ? ["get", key] : ["get"],
+            "set" => ["set", parsed.GetValue<string>("key")!, parsed.GetValue<string>("value")!],
+            _ => []
         };
-    }
 
-    /// <summary>
-    /// Reads a value-flag's value: inline (<c>--flag=x</c>) or as the next
-    /// argument; a following flag is never consumed as the value.
-    /// </summary>
-    private static string ReadFlagValue(string name, string? inlineValue, string[] args, ref int i)
-    {
-        var value = inlineValue;
-        if (value is null && i + 1 < args.Length &&
-            !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+        return new CliArgs(parsed.GetValue<bool>("--continue"), agent,
+            parsed.GetValue<string?>("--model"), command == root ? null : "config", commandArgs,
+            help, version, parsed.GetValue<bool>("--log"), notes, parsed.GetValue<bool>("--meeting"))
         {
-            value = args[++i];
-        }
-
-        return value ?? throw new UsageError($"'{name}' requires a value.");
-    }
-
-    private static (string Name, string? Value) SplitFlag(string arg)
-    {
-        var eq = arg.IndexOf('=');
-        return eq >= 0 ? (arg[..eq], arg[(eq + 1)..]) : (arg, null);
+            DirectoryPath = parsed.GetValue<string?>("--dir"),
+            AgentArguments = agentArguments,
+            HelpCommandPath = commandPath
+        };
     }
 }

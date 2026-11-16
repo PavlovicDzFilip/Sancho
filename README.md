@@ -73,6 +73,8 @@ Windows npm installations are supported: Sancho launches the official JavaScript
 
 ## Usage
 
+CLI options and `config get` / `config set` are defined with System.CommandLine; run `sancho --help`, `sancho config --help`, or `sancho config set --help` for generated help. Usage errors exit with code 2. Repeated `--agent`, `--model`, and `--dir` options use the last value. Response-file expansion is disabled, so `@values` remain literal. Help/version requests short-circuit service startup; as with standard System.CommandLine help, a help request can suppress other parse errors.
+
 ```bash
 sancho               # talk to your agent in the current directory
 sancho --continue    # resume a previous session

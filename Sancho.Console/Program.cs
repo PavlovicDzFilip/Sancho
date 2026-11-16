@@ -47,7 +47,7 @@ catch (UsageError ex)
 
 if (cliArgs.ShowHelp)
 {
-    AnsiConsole.Markup(HelpText.Body);
+    AnsiConsole.Write(HelpText.Render(cliArgs.HelpCommandPath));
     return 0;
 }
 

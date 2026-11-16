@@ -6,6 +6,113 @@ namespace Sancho.Tests;
 public class CliArgsTests
 {
     [Fact]
+    public void HelpRequestCanExplainAnOtherwiseInvalidCommand()
+    {
+        Assert.True(CliArgs.Parse(["--unknown", "--help"]).ShowHelp);
+    }
+
+    [Theory]
+    [InlineData("--version", "--help", false)]
+    [InlineData("-h", "-v", true)]
+    [InlineData("/?", "--version", true)]
+    [InlineData("/h", "--version", true)]
+    [InlineData("--help=", "--version=", true)]
+    [InlineData("--version=", "--help=", false)]
+    public void FirstHelpOrVersionFlagWins(string first, string second, bool help)
+    {
+        var parsed = CliArgs.Parse([first, second]);
+        Assert.Equal(help, parsed.ShowHelp);
+        Assert.Equal(!help, parsed.ShowVersion);
+    }
+
+    [Theory]
+    [InlineData("[suggest]")]
+    [InlineData("[diagram]")]
+    [InlineData("[anything]")]
+    public void LeadingDirectivesAreRejected(string directive)
+    {
+        Assert.Throws<UsageError>(() => CliArgs.Parse([directive]));
+    }
+
+    [Fact]
+    public void RepeatedValueOptionsUseLastValue()
+    {
+        var parsed = CliArgs.Parse(["--agent", "claude", "--agent=codex", "--model=tiny", "--model", "small", "--dir", ".", "--dir=.."]);
+        Assert.Equal("codex", parsed.Agent);
+        Assert.Equal("small", parsed.Model);
+        Assert.Equal("..", parsed.DirectoryPath);
+    }
+
+    [Theory]
+    [InlineData("--agent", "claude", "--agent")]
+    [InlineData("--dir", ".", "--dir=")]
+    [InlineData("--dir", ".", "--dir", "--notes")]
+    public void RepeatedValueOptionsStillValidateEveryOccurrence(params string[] args)
+    {
+        Assert.Throws<UsageError>(() => CliArgs.Parse(args));
+    }
+
+    [Fact]
+    public void ExplicitInlineDirectoryMayBeginWithDashes()
+    {
+        Assert.Equal("--project", CliArgs.Parse(["--dir=--project"]).DirectoryPath);
+    }
+
+    [Fact]
+    public void RootHelpIsGeneratedFromRegisteredOptions()
+    {
+        var help = HelpText.Render();
+        foreach (var option in new[] { "--agent", "--model", "--dir", "--continue", "--notes", "--meeting", "--log", "--help", "--version" })
+            Assert.Contains(option, help);
+        Assert.Contains("config", help);
+        Assert.Contains("Everything after --", help);
+    }
+
+    [Theory]
+    [InlineData("config")]
+    [InlineData("config", "get")]
+    [InlineData("config", "set")]
+    public void SubcommandHelpHasItsOwnUsage(params string[] path)
+    {
+        var parsed = CliArgs.Parse([.. path, "--help"]);
+        Assert.True(parsed.ShowHelp);
+        Assert.Equal(path, parsed.HelpCommandPath);
+        var help = HelpText.Render(path);
+        Assert.Contains("config", help);
+        Assert.DoesNotContain("Agent arguments:", help);
+        if (path.Length == 2) Assert.Contains(path[1] == "set" ? "<value>" : "[<key>]", help);
+    }
+
+    [Theory]
+    [InlineData("config", "get")]
+    [InlineData("config", "get", "agent")]
+    [InlineData("config", "set", "model", "@literal")]
+    public void ConfigArgumentsArePreservedWithoutResponseFileExpansion(params string[] args)
+    {
+        Assert.Equal(args[1..], CliArgs.Parse(args).CommandArgs);
+    }
+
+    [Theory]
+    [InlineData("config")]
+    [InlineData("config", "set", "agent")]
+    [InlineData("config", "set", "agent", "claude", "extra")]
+    [InlineData("config", "get", "agent", "extra")]
+    [InlineData("config", "unknown")]
+    public void ConfigShapeIsValidatedBeforeDispatch(params string[] args)
+    {
+        Assert.Throws<UsageError>(() => CliArgs.Parse(args));
+    }
+
+    [Fact]
+    public void PassthroughPreservesEmptyResponseFileAndDirectiveTokens()
+    {
+        string[] forwarded = ["", "@missing.rsp", "[suggest]", "a\"b", "--help", "--", "tail"];
+        var parsed = CliArgs.Parse(["--agent", "claude", "--", .. forwarded]);
+        Assert.Equal(forwarded, parsed.AgentArguments);
+        Assert.False(parsed.ShowHelp);
+    }
+
+    [Fact]
     public void SeparatorStopsSanchoOptionParsing()
     {
         var parsed = CliArgs.Parse(["--agent", "claude", "--", "--help", "--model", "opus", "two words", "--"]);

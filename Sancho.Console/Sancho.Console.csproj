@@ -14,6 +14,7 @@
       <PackageReference Include="NAudio" Version="2.3.0" />
       <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.5" />
       <PackageReference Include="Spectre.Console" Version="0.57.2" />
+      <PackageReference Include="System.CommandLine" Version="2.0.9" />
     </ItemGroup>
 
     <ItemGroup>

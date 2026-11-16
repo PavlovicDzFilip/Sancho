@@ -137,7 +137,7 @@ public class HermesAgentTests
             Assert.DoesNotContain(events, e => e is AgentEvent.Error);
             using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(capture));
             var args = doc.RootElement.GetProperty("arguments").EnumerateArray().Select(e => e.GetString()).ToArray();
-            Assert.Contains("--yolo", args);
+            Assert.DoesNotContain("--yolo", args);
             Assert.Contains("--oneshot", args);
             Assert.Contains("stream-json", args);
             Assert.Contains("--in", args);

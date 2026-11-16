@@ -359,11 +359,6 @@ public sealed class CursorAgentService : AgentService
         psi.ArgumentList.Add(string.IsNullOrWhiteSpace(instructions)
             ? "Spoken user request:\n" + sentence
             : "<sancho_instructions>\n" + instructions + "\n</sancho_instructions>\nSpoken user request:\n" + sentence);
-        psi.ArgumentList.Add("--force");
-        psi.ArgumentList.Add("--trust");
-        psi.ArgumentList.Add("--approve-mcps");
-        psi.ArgumentList.Add("--sandbox");
-        psi.ArgumentList.Add("disabled");
         psi.ArgumentList.Add("--output-format");
         psi.ArgumentList.Add("stream-json");
         if (_sessionId is not null)
@@ -372,6 +367,7 @@ public sealed class CursorAgentService : AgentService
             psi.ArgumentList.Add(_sessionId);
         }
 
+        _launchOptions.AppendAgentArguments(psi);
         await using var owned = OwnedAgentProcess.Start(psi, ct);
         var process = owned.Process;
         process.StandardInput.Close();

@@ -143,9 +143,11 @@ public sealed class HermesAgentService : AgentService
     {
         var instructions = _launchOptions.ReadInstructions();
         var prompt = instructions.Length == 0 ? sentence : $"<sancho_instructions>\n{instructions}\n</sancho_instructions>\n\n{sentence}";
-        var args = new List<string> { "--in", Path.GetFullPath(_launchOptions.WorkingDirectory), "chat", "-q", prompt, "--format", "stream-json", "--oneshot", "--yolo" };
+        var args = new List<string> { "--in", Path.GetFullPath(_launchOptions.WorkingDirectory), "chat", "-q", prompt, "--format", "stream-json", "--oneshot" };
         if (_sessionId is not null) args.AddRange(["--resume", _sessionId]);
-        await using var owned = OwnedAgentProcess.Start(_launchOptions.CreateStartInfo(Executable, args), ct);
+        var startInfo = _launchOptions.CreateStartInfo(Executable, args);
+        _launchOptions.AppendAgentArguments(startInfo);
+        await using var owned = OwnedAgentProcess.Start(startInfo, ct);
         var process = owned.Process;
         process.StandardInput.Close();
         var stderrTask = process.StandardError.ReadToEndAsync();

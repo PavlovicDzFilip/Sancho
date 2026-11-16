@@ -87,7 +87,7 @@ public class CodexAgentTests
         finally { Directory.Delete(root, true); }
     }
 
-    private static async Task<(List<AgentEvent> Events, string[] Arguments, string Input)> Run(string[] lines, string? resumed = null, int turns = 1, string sentence = "-literal prompt", bool startupFlood = false)
+    private static async Task<(List<AgentEvent> Events, string[] Arguments, string Input)> Run(string[] lines, string? resumed = null, int turns = 1, string sentence = "-literal prompt", bool startupFlood = false, string[]? agentArguments = null)
     {
         var dir = Path.Combine(Path.GetTempPath(), "sancho-codex-" + Guid.NewGuid());
         Directory.CreateDirectory(dir);
@@ -102,6 +102,7 @@ public class CodexAgentTests
         steps.AddRange(lines.Select(value => (object)new { kind = "stdout", value }));
         await File.WriteAllLinesAsync(script, steps.Select(step => JsonSerializer.Serialize(step)), TestContext.Current.CancellationToken);
         var options = new AgentLaunchOptions { Executable = "dotnet", WorkingDirectory = dir, Instructions = "keep \"quotes\"\nnext line", PrefixArguments = new[] { Path.Combine(AppContext.BaseDirectory, "process-test-host", "Sancho.ProcessTestHost.dll"), "script", script } };
+        options = options with { AgentArguments = agentArguments ?? [] };
         var service = new CodexAgentService(resumed, NullLogger<CodexAgentService>.Instance, options);
         using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var events = new List<AgentEvent>();
@@ -124,11 +125,22 @@ public class CodexAgentTests
         finally { Directory.Delete(dir, true); }
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("thread-123")]
+    public async Task ExecOptionsPrecedeResumeOnFollowingTurns(string? resumed)
+    {
+        var result = await Run(["{\"type\":\"thread.started\",\"thread_id\":\"thread-123\"}", "{\"type\":\"turn.completed\"}"],
+            resumed: resumed, turns: 2, agentArguments: ["--sandbox", "read-only"]);
+        Assert.Equal(new[] { "exec", "--sandbox", "read-only", "resume", "thread-123" }, result.Arguments.Take(5));
+        Assert.Equal(2, result.Events.OfType<AgentEvent.TurnComplete>().Count());
+    }
+
     [Fact]
     public async Task TwoTurnsResumeAndPreserveInstructionsAndLiteralInput()
     {
         var result = await Run(new[] { "{\"type\":\"thread.started\",\"thread_id\":\"thread-123\"}", "{\"type\":\"item.completed\",\"item\":{\"id\":\"a\",\"type\":\"agent_message\",\"text\":\"answer\"}}", "{\"type\":\"turn.completed\"}" }, turns: 2);
-        Assert.Equal(new[] { "exec", "resume", "thread-123", "--json", "--dangerously-bypass-approvals-and-sandbox", "-c", "developer_instructions=" + JsonSerializer.Serialize("keep \"quotes\"\nnext line"), "-" }, result.Arguments);
+        Assert.Equal(new[] { "exec", "resume", "thread-123", "--json", "-c", "developer_instructions=" + JsonSerializer.Serialize("keep \"quotes\"\nnext line"), "-" }, result.Arguments);
         Assert.Equal(2, result.Events.OfType<AgentEvent.TurnComplete>().Count());
         Assert.Equal(2, result.Events.OfType<AgentEvent.AssistantText>().Count());
         Assert.Equal(2, result.Input.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries).Length);

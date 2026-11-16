@@ -6,6 +6,84 @@ namespace Sancho.Tests;
 public class CliArgsTests
 {
     [Fact]
+    public void SeparatorStopsSanchoOptionParsing()
+    {
+        var parsed = CliArgs.Parse(["--agent", "claude", "--", "--help", "--model", "opus", "two words", "--"]);
+        Assert.Equal("claude", parsed.Agent);
+        Assert.False(parsed.ShowHelp);
+        Assert.Null(parsed.Model);
+        Assert.Null(parsed.Command);
+        Assert.Equal(new[] { "--help", "--model", "opus", "two words", "--" }, parsed.AgentArguments);
+    }
+
+    [Theory]
+    [InlineData("--dir", ".")]
+    [InlineData("--dir=.")]
+    public void DirectoryOptionIsAccepted(params string[] args)
+    {
+        var parsed = CliArgs.Parse(args);
+        Assert.Null(parsed.Command);
+        Assert.Equal(".", parsed.DirectoryPath);
+        Assert.Equal(Directory.GetCurrentDirectory(), parsed.ResolveWorkingDirectory());
+    }
+
+    [Fact]
+    public void EmptySeparatorAndDirectoryDefaults()
+    {
+        var parsed = CliArgs.Parse(["--"]);
+        Assert.Empty(parsed.AgentArguments);
+        Assert.Null(parsed.DirectoryPath);
+        Assert.Equal(Directory.GetCurrentDirectory(), parsed.ResolveWorkingDirectory());
+    }
+
+    [Theory]
+    [InlineData("--dir")]
+    [InlineData("--dir", "--")]
+    [InlineData("--dir=")]
+    [InlineData("--dir", " ")]
+    [InlineData("--notes", "--", "--model", "opus")]
+    [InlineData("--agent", "dummy", "--", "--verbose")]
+    [InlineData("config", "get", "--", "--verbose")]
+    public void InvalidDirectoryOrUnusedAgentArgumentsAreRejected(params string[] args)
+    {
+        Assert.Throws<UsageError>(() => CliArgs.Parse(args));
+    }
+
+    [Fact]
+    public void MissingDirectoryIsRejectedWithoutCreatingIt()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "sancho-missing-" + Guid.NewGuid());
+        Assert.Throws<UsageError>(() => CliArgs.Parse(["--dir", path]).ResolveWorkingDirectory());
+        Assert.False(Directory.Exists(path));
+    }
+
+    [Fact]
+    public void SelectedDirectoryDoesNotChangeProcessDirectory()
+    {
+        var current = Directory.GetCurrentDirectory();
+        var path = Path.GetTempPath();
+        Assert.Equal(Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)), CliArgs.Parse(["--dir", path]).ResolveWorkingDirectory());
+        Assert.Equal(current, Directory.GetCurrentDirectory());
+    }
+
+    [Fact]
+    public void TrailingDirectorySeparatorDoesNotChangeSessionStoreKey()
+    {
+        var current = Directory.GetCurrentDirectory();
+        var plain = CliArgs.Parse(["--dir", current]).ResolveWorkingDirectory();
+        var trailing = CliArgs.Parse(["--dir", current + Path.DirectorySeparatorChar]).ResolveWorkingDirectory();
+        Assert.Equal(Sancho.Console.Agents.SessionJson.EncodeProjectDirectory(plain),
+            Sancho.Console.Agents.SessionJson.EncodeProjectDirectory(trailing));
+    }
+
+    [Fact]
+    public void RootDirectoryIsPreserved()
+    {
+        var root = Path.GetPathRoot(Directory.GetCurrentDirectory())!;
+        Assert.Equal(root, CliArgs.Parse(["--dir", root]).ResolveWorkingDirectory());
+    }
+
+    [Fact]
     public void NoArgs_AllDefaults()
     {
         var a = CliArgs.Parse([]);

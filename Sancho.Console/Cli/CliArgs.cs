@@ -16,16 +16,38 @@ public sealed record CliArgs(
     bool Notes,
     bool Meeting)
 {
+    public string? DirectoryPath { get; init; }
+    public string[] AgentArguments { get; init; } = [];
+
+    public string ResolveWorkingDirectory()
+    {
+        try
+        {
+            var directory = Path.TrimEndingDirectorySeparator(
+                Path.GetFullPath(DirectoryPath ?? Directory.GetCurrentDirectory()));
+            if (!Directory.Exists(directory))
+                throw new UsageError($"Directory '{directory}' does not exist.");
+            return directory;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or UnauthorizedAccessException)
+        {
+            throw new UsageError($"Invalid --dir: {ex.Message}");
+        }
+    }
+
     /// <summary>
     /// Parses the command line: <c>-c</c>, <c>--log</c>, <c>--notes</c>,
-    /// <c>--meeting</c>, <c>--agent</c>, <c>--model</c>, and the <c>config</c>
-    /// subcommand. Unknown flags/commands throw <see cref="UsageError"/>.
+    /// <c>--meeting</c>, <c>--agent</c>, <c>--model</c>, <c>--dir</c>, and the <c>config</c>
+    /// subcommand. Arguments after <c>--</c> belong to the agent.
+    /// Unknown Sancho flags/commands throw <see cref="UsageError"/>.
     /// </summary>
     public static CliArgs Parse(string[] args)
     {
         var continueSession = false;
         string? agent = null;
         string? model = null;
+        string? directory = null;
+        string[] agentArguments = [];
         var log = false;
         var notes = false;
         var meeting = false;
@@ -34,6 +56,11 @@ public sealed record CliArgs(
         for (var i = 0; i < args.Length; i++)
         {
             var arg = args[i];
+            if (arg == "--")
+            {
+                agentArguments = args[(i + 1)..];
+                break;
+            }
             switch (arg)
             {
                 case "-h" or "--help":
@@ -64,6 +91,12 @@ public sealed record CliArgs(
                         {
                             model = ReadFlagValue(name, inlineValue, args, ref i);
                         }
+                        else if (name == "--dir")
+                        {
+                            directory = ReadFlagValue(name, inlineValue, args, ref i);
+                            if (string.IsNullOrWhiteSpace(directory))
+                                throw new UsageError("'--dir' requires a non-empty directory.");
+                        }
                         else
                         {
                             throw new UsageError($"Unknown option '{name}'.");
@@ -79,12 +112,21 @@ public sealed record CliArgs(
 
         if (positional.Count > 0)
         {
+            if (agentArguments.Length > 0)
+                throw new UsageError("Agent arguments cannot be used with a subcommand.");
             if (positional[0] is not "config")
                 throw new UsageError($"Unknown command '{positional[0]}'.");
             return new CliArgs(continueSession, agent, model, "config", positional.Skip(1).ToArray(), false, false, log, notes, meeting);
         }
 
-        return new CliArgs(continueSession, agent, model, null, [], false, false, log, notes, meeting);
+        if (agentArguments.Length > 0 && (notes || agent == "dummy"))
+            throw new UsageError("Agent arguments require an agent backend, not notes mode or dummy.");
+
+        return new CliArgs(continueSession, agent, model, null, [], false, false, log, notes, meeting)
+        {
+            DirectoryPath = directory,
+            AgentArguments = agentArguments
+        };
     }
 
     /// <summary>

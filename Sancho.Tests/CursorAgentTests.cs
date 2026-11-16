@@ -128,10 +128,11 @@ public class CursorAgentTests
             Assert.DoesNotContain(events, e => e is AgentEvent.Error);
             using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(capture));
             var args = doc.RootElement.GetProperty("arguments").EnumerateArray().Select(e => e.GetString()).ToArray();
-            Assert.Contains("--force", args);
-            Assert.Contains("--trust", args);
-            Assert.Contains("--approve-mcps", args);
-            Assert.Contains("disabled", args);
+            Assert.DoesNotContain("--force", args);
+            Assert.DoesNotContain("--trust", args);
+            Assert.DoesNotContain("--approve-mcps", args);
+            Assert.DoesNotContain("--sandbox", args);
+            Assert.DoesNotContain("disabled", args);
             Assert.Contains("--resume", args);
             Assert.Contains("cursor-session", args);
             Assert.Contains(args, a => a is not null && a.Contains("<sancho_instructions>\nproject rules") && a.EndsWith("--dangerous spoken text"));

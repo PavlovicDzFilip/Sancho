@@ -258,11 +258,12 @@ public sealed class ClaudeCodeAgentService : AgentService
             var arguments = new List<string>
             {
                 "--print", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json",
-                "--permission-mode", "bypassPermissions",
                 _resumeSessionId is null ? "--session-id" : "--resume", _sessionId,
                 "--append-system-prompt", _systemPrompt
             };
-            await using var owned = OwnedAgentProcess.Start(_launchOptions.CreateStartInfo(_executable, arguments), token);
+            var startInfo = _launchOptions.CreateStartInfo(_executable, arguments);
+            _launchOptions.AppendAgentArguments(startInfo);
+            await using var owned = OwnedAgentProcess.Start(startInfo, token);
             _process = owned.Process;
             _stdin = new StreamWriter(_process.StandardInput.BaseStream, new UTF8Encoding(false)) { AutoFlush = true };
             try

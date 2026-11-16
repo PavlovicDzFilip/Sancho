@@ -106,7 +106,8 @@ public class ClaudeAgentTests
             Assert.Contains("--append-system-prompt", arguments);
             Assert.DoesNotContain("--system-prompt", arguments);
             Assert.Contains(options.Instructions, arguments);
-            Assert.Contains("bypassPermissions", arguments);
+            Assert.DoesNotContain("--permission-mode", arguments);
+            Assert.DoesNotContain("bypassPermissions", arguments);
             Assert.Equal(directory, launch.RootElement.GetProperty("directory").GetString());
             Assert.Contains(resume is null ? "--session-id" : "--resume", arguments);
             if (resume is not null) Assert.Contains(resume, arguments);
